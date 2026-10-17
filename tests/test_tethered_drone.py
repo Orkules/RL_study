@@ -4,6 +4,27 @@ import torch
 
 from rl.ppo_agent import ActorCritic
 from sim.tethered_drone_env import TetheredDroneEnv
+from sim.wing_linkage import (
+    MAX_WING_FLAP_DEG,
+    get_servo_range_for_wing_limit,
+    normalized_action_to_servo_deg,
+    servo_deg_to_wing_flap_deg,
+    wing_flap_deg_to_servo_deg,
+)
+
+
+def test_wing_linkage_kinematics():
+    assert MAX_WING_FLAP_DEG == 50.0
+    assert get_servo_range_for_wing_limit(50.0) == (-49.20, 53.11)
+    assert get_servo_range_for_wing_limit(40.0) == (-39.61, 41.70)
+
+    for target_flap in [-50.0, -40.0, -20.0, 0.0, 20.0, 40.0, 50.0]:
+        servo_deg = wing_flap_deg_to_servo_deg(target_flap)
+        recovered_flap = servo_deg_to_wing_flap_deg(servo_deg)
+        assert abs(recovered_flap - target_flap) < 1e-2
+
+    assert abs(servo_deg_to_wing_flap_deg(normalized_action_to_servo_deg(-1.0, 50.0)) - (-50.0)) < 1e-2
+    assert abs(servo_deg_to_wing_flap_deg(normalized_action_to_servo_deg(+1.0, 50.0)) - (+50.0)) < 1e-2
 
 
 def test_env_spaces_and_telemetry():
