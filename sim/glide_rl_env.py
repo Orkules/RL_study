@@ -266,40 +266,18 @@ class GlidePulloutEnv(gym.Env):
                 break
             alpha, _ = self._step_physics_substep(cmd_r_deg, cmd_l_deg, sub_dt)
 
-        roll, pitch, yaw = self.angles
-        p, q, r = self.omega
         cur_xy_dist = float(np.hypot(self.pos_ned[0], self.pos_ned[1]))
         delta_xy = cur_xy_dist - self.prev_xy_dist
         self.prev_xy_dist = cur_xy_dist
 
-        cur_alt_m = max(0.0, float(-self.pos_ned[2]))
-        delta_alt = max(0.0, self.prev_alt_m - cur_alt_m)
-        self.prev_alt_m = cur_alt_m
-
-        # --- Reward Function (Pure Horizontal X-Y Distance — Zero Pitch Reward!) ---
-        # Reward ONLY horizontal X-Y distance progress + keeping wings level (no artificial pitch target)
-        xy_distance_reward = 5.0 * delta_xy
-
-        # Penalize roll tilt away from wings-level (roll = 0 deg -> 1 - cos(roll) = 0, inverted 180 deg -> 2.0)
-        roll_penalty = 1.2 * float(1.0 - np.cos(roll)) + 0.15 * float(act[1] ** 2)
-        rate_penalty = 0.008 * float(p ** 2 + q ** 2 + r ** 2)
-        slew_penalty = 0.02 * float(np.sum((act - self.last_action) ** 2))
-
-        reward = (
-            xy_distance_reward
-            - roll_penalty
-            - rate_penalty
-            - slew_penalty
-        )
+        # --- Reward Function (100% Unshaped Pure Horizontal X-Y Distance ONLY) ---
+        # Zero attitude penalties, zero roll/pitch/rate/slew shaping, zero mid-air termination.
+        # The network is rewarded strictly for how far it travels across the X-Y ground plane.
+        reward = 5.0 * delta_xy
 
         hit_ground = bool(-self.pos_ned[2] <= 0.0)
-        # Only check roll tumble once pitch has pulled up past -80 deg (away from -90 deg Euler gimbal singularity)
-        tumbled = bool(pitch > np.deg2rad(-80.0) and abs(roll) > np.deg2rad(100.0))
-        terminated = hit_ground or tumbled
-        if tumbled:
-            reward -= 20.0
-        elif hit_ground:
-            # Terminal bonus for total horizontal X-Y distance reached on the ground
+        terminated = hit_ground
+        if hit_ground:
             reward += 1.0 * cur_xy_dist
 
         truncated = bool(self.step_count >= self.max_steps)

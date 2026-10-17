@@ -50,7 +50,7 @@ def evaluate_glide_policy(
 
 
 def train_glide_rl(
-    num_updates: int = 35,
+    num_updates: int = 55,
     num_envs: int = 6,
     rollout_steps: int = 512,
     seed: int = 42,
@@ -70,11 +70,11 @@ def train_glide_rl(
     ppo = PPOTrainer(
         model,
         PPOConfig(
-            lr=8e-4,
-            gamma=0.999,
+            lr=1e-3,
+            gamma=0.9995,
             gae_lambda=0.98,
             clip_coef=0.2,
-            ent_coef=0.005,
+            ent_coef=0.002,
             update_epochs=8,
             minibatch_size=256,
         ),
@@ -82,9 +82,9 @@ def train_glide_rl(
 
     milestone_schedule = {
         0: ("stage_0_untrained", "Stage 0: Untrained (Vertical Dive to Ground)"),
-        18: ("stage_1_early", "Stage 1: Early Learning (Beginning Pull-Out)"),
-        21: ("stage_2_mid", "Stage 2: Mid Training (Pulling Up into Glide)"),
-        23: ("stage_3_late", "Stage 3: Late Training (Long-Range Stable Glide)"),
+        5: ("stage_1_early", "Stage 1: Early Learning (Beginning Pull-Out)"),
+        12: ("stage_2_mid", "Stage 2: Mid Training (Pulling Up into Glide)"),
+        25: ("stage_3_late", "Stage 3: Late Training (Long-Range Stable Glide)"),
         num_updates: ("stage_4_master", "Stage 4: Converged (Optimal Pull-Up & Max X-Y Range)"),
     }
 
@@ -158,7 +158,7 @@ def train_glide_rl(
 
         frac = 1.0 - (update / float(num_updates))
         for pg in ppo.optimizer.param_groups:
-            pg["lr"] = max(1e-4, 8e-4 * frac)
+            pg["lr"] = max(1e-4, 1e-3 * frac)
 
         obs_buf = np.zeros((rollout_steps, num_envs, 10), dtype=np.float32)
         act_buf = np.zeros((rollout_steps, num_envs, 2), dtype=np.float32)
