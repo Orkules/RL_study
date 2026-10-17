@@ -591,6 +591,40 @@
     originTarget.position.y = 1.0;
     dropWorldGroup.add(originTarget);
 
+    // Distance rings on the ground (50 m, 100 m, 200 m, 300 m, 500 m from release point)
+    [50, 100, 200, 300, 500].forEach((distM) => {
+      const rRing = new THREE.Mesh(
+        new THREE.RingGeometry((distM - 1.2) * WORLD_SCALE, (distM + 1.2) * WORLD_SCALE, 64),
+        new THREE.MeshBasicMaterial({ color: distM === 100 || distM === 300 ? 0xdc2626 : 0xffffff, side: THREE.DoubleSide })
+      );
+      rRing.rotation.x = -Math.PI / 2;
+      rRing.position.y = 1.0;
+      dropWorldGroup.add(rRing);
+    });
+
+    // Straight vertical reference line directly from the release point (0, Drop_Altitude, 0) down to the ground (0, 0, 0)
+    const releaseDropLineGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 600 * WORLD_SCALE, 0)
+    ]);
+    const releaseDropLine = new THREE.Line(
+      releaseDropLineGeo,
+      new THREE.LineDashedMaterial({ color: 0x0f172a, dashSize: 45, gapSize: 25, linewidth: 2 })
+    );
+    releaseDropLine.computeLineDistances();
+    dropWorldGroup.add(releaseDropLine);
+
+    // Also add 3D cylinder segments along the vertical drop line so the vertical reference line is thick and clearly visible at any zoom!
+    const verticalDropPillars = new THREE.Group();
+    const vDotGeo = new THREE.CylinderGeometry(10, 10, 45, 10);
+    const vDotMat = new THREE.MeshBasicMaterial({ color: 0x1e293b });
+    for (let hM = 10; hM <= 600; hM += 20) {
+      const m = new THREE.Mesh(vDotGeo, vDotMat);
+      m.position.set(0, hM * WORLD_SCALE, 0);
+      verticalDropPillars.add(m);
+    }
+    dropWorldGroup.add(verticalDropPillars);
+
     // Live Ground Shadow / Plumb-Line under the falling object so you always see height above ground
     const groundShadowMesh = new THREE.Mesh(
       new THREE.CircleGeometry(35, 32),
@@ -1160,8 +1194,12 @@
         const startY = simState.altM * WORLD_SCALE;
         simState.trail = [[0, startY, 0]];
         vehicleGroup.position.set(0, startY, 0);
-        // Always start focused directly on the object at the release point!
-        setCamPreset("follow");
+        // Show vertical reference line up to the current release altitude
+        for (const m of verticalDropPillars.children) {
+          m.visible = m.position.y <= startY;
+        }
+        // Default first look in Free-Drop mode = Full Trajectory View (zoomed out from release height down to ground!)
+        setCamPreset("overview");
       }
       sendWs({ type: "set_mode", mode: newMode, altitude_m: simState.dropAltitudeInit, airspeed_ms: simState.tunnelAirspeed });
     }
@@ -1204,6 +1242,9 @@
     slDropAlt.oninput = () => {
       simState.dropAltitudeInit = Number(slDropAlt.value);
       document.getElementById("val-drop-alt").textContent = `${simState.dropAltitudeInit.toFixed(0)} m`;
+      if (simState.mode === "free_drop") {
+        setMode("free_drop", simState.dropAltitudeInit);
+      }
     };
     document.getElementById("btn-drop-200").onclick = () => {
       slDropAlt.value = 200; slDropAlt.oninput(); setMode("free_drop", 200);
@@ -1283,15 +1324,15 @@
       if (p === "side")     camera.position.copy(target).add(new THREE.Vector3(0, 35, 380));
       if (p === "rear")     camera.position.copy(target).add(new THREE.Vector3(-340, 45, 0));
       if (p === "overview") {
-        // Frame the entire trajectory in the clear center-right of the viewport (away from the top-left HUD box!)
-        const hTop = simState.dropAltitudeInit * WORLD_SCALE;
-        const curX = Math.max(0, simState.posN * WORLD_SCALE);
-        const curZ = simState.posE * WORLD_SCALE;
-        const centerX = Math.max(110 * WORLD_SCALE, curX * 0.45);
-        const centerY = hTop * 0.48;
-        const span = Math.max(hTop * 1.45, Math.abs(curX) * 1.35, 240 * WORLD_SCALE);
-        controls.target.set(centerX, centerY, curZ * 0.5);
-        camera.position.set(centerX - span * 0.12, centerY + span * 0.08, curZ * 0.5 + span * 1.38);
+        // Home / Full Trajectory View: Zoomed out so you see from the chosen release height (0, H, 0) all the way down to the ground (0, 0, 0) and across the expected glide reach!
+        const H = simState.dropAltitudeInit * WORLD_SCALE;
+        const expectedReach = Math.max(H * 0.9, Math.abs(simState.posN * WORLD_SCALE) * 1.1);
+        const centerX = expectedReach * 0.38;
+        const centerY = H * 0.45;
+        // For a 42 deg vertical FOV, distance = (H * 1.45) / (2 * tan(21 deg)) ~= H * 1.90 guarantees both (0, H) and ground (0, 0) fit with generous margin!
+        const distZ = Math.max(H * 1.85, expectedReach * 1.35);
+        controls.target.set(centerX, centerY, 0);
+        camera.position.set(centerX, centerY + H * 0.08, distZ);
         controls.update();
         return;
       }
@@ -1347,15 +1388,9 @@
         pPos.setXYZ(1, vx, vy, vz);
         pPos.needsUpdate = true;
 
-        if (camPreset === "overview") {
-          // Dynamically keep the entire trajectory centered in the open viewport (to the right of the HUD card)
-          const hTop = simState.dropAltitudeInit * WORLD_SCALE;
-          const centerX = Math.max(110 * WORLD_SCALE, vx * 0.45);
-          const centerY = hTop * 0.48;
-          const span = Math.max(hTop * 1.45, Math.abs(vx) * 1.35, 240 * WORLD_SCALE);
-          controls.target.set(centerX, centerY, vz * 0.5);
-          camera.position.set(centerX - span * 0.12, centerY + span * 0.08, vz * 0.5 + span * 1.38);
-        } else {
+        // Only translate the camera along with the falling object in Follow/Side/Rear modes;
+        // NEVER overwrite camera.position in Overview mode so the user can freely zoom in/out and pan the map with the mouse!
+        if (camPreset !== "overview") {
           const deltaPos = vehicleGroup.position.clone().sub(prevPos);
           camera.position.add(deltaPos);
           controls.target.copy(vehicleGroup.position);
