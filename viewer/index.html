@@ -276,15 +276,15 @@
       caseL.position.set(0.0, 28.0, -7.0);
       root.add(caseL);
 
-      // 1. Servo Shaft Pins centered in BODY.STL side holes (Y=35.962 mm, Z=±7.000 mm)
-      const servoPinR = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 14.5, 20), pinMat);
+      // 1. Servo Shaft Pins flush inside WING MOTOR ARM hub (Y=35.962 mm, Z=±6.763 mm, |X|=10.0..23.2 mm)
+      const servoPinR = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 13.2, 20), pinMat);
       servoPinR.rotation.z = Math.PI / 2;
-      servoPinR.position.set(17.0, 35.962, 7.000);
+      servoPinR.position.set(16.6, 35.962, 6.763);
       root.add(servoPinR);
 
-      const servoPinL = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 14.5, 20), pinMat);
+      const servoPinL = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 13.2, 20), pinMat);
       servoPinL.rotation.z = Math.PI / 2;
-      servoPinL.position.set(-17.0, 35.962, -7.000);
+      servoPinL.position.set(-16.6, 35.962, -6.763);
       root.add(servoPinL);
 
       // 2. Wing Flap Hinge Pins passing directly through the inner and outer Ø2.0 mm holes in BODY.STL
