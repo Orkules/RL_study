@@ -315,9 +315,18 @@
       </div>
 
       <!-- Bottom-Left 3-Arrow X, Y, Z Coordinate Axis Gizmo -->
-      <div id="axes-gizmo-box" style="position:absolute;bottom:16px;left:16px;background:rgba(15,23,42,0.88);border:1px solid #334155;border-radius:10px;padding:6px 10px;pointer-events:none;backdrop-filter:blur(6px);display:flex;flex-direction:column;align-items:center;">
+      <div id="axes-gizmo-box" style="position:absolute;bottom:16px;left:16px;background:rgba(15,23,42,0.92);border:1px solid #334155;border-radius:10px;padding:6px 10px;pointer-events:none;display:flex;flex-direction:column;align-items:center;">
         <div style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px;">World Axes (X · Y · Z)</div>
         <canvas id="axes-canvas" width="115" height="115" style="display:block;"></canvas>
+      </div>
+
+      <!-- Bottom-Right Live 2D Side-Profile Trajectory Map (Altitude vs Horizontal Distance) -->
+      <div id="traj-map-box" style="display:none;position:absolute;bottom:16px;right:16px;background:rgba(15,23,42,0.94);border:1px solid #334155;border-radius:10px;padding:8px 12px;pointer-events:none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <span style="font-size:10.5px;font-weight:700;color:#f8fafc;text-transform:uppercase;letter-spacing:0.05em;">Full Drop Trajectory Path (Altitude vs. Distance)</span>
+          <span id="traj-range-lbl" style="font-size:11px;font-weight:700;color:#fb923c;">Dist: 0.0 m</span>
+        </div>
+        <canvas id="traj-map-canvas" width="320" height="165" style="display:block;border-radius:6px;border:1px solid #1e293b;"></canvas>
       </div>
     </div>
 
@@ -522,9 +531,9 @@
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x05080f);
-    scene.fog = new THREE.FogExp2(0x05080f, 0.00018);
+    scene.fog = null; // No fog so the ground, sky, and trajectory are 100% crisp at any altitude
 
-    const camera = new THREE.PerspectiveCamera(42, 1, 1, 50000);
+    const camera = new THREE.PerspectiveCamera(42, 1, 5.0, 2000000);
     camera.position.set(240, 140, 290);
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
@@ -559,47 +568,33 @@
     const dropWorldGroup = new THREE.Group();
     dropWorldGroup.visible = false;
 
-    // Solid green/earthy terrain ground plane at Altitude = 0 m
+    // Solid unlit matte green terrain ground plane at Altitude = 0 m (MeshBasicMaterial so there is ZERO light blowout or horizon haze!)
     const groundPlane = new THREE.Mesh(
-      new THREE.PlaneGeometry(60000, 60000),
-      new THREE.MeshStandardMaterial({ color: 0x65a30d, roughness: 0.9, metalness: 0.05 })
+      new THREE.PlaneGeometry(3000000, 3000000),
+      new THREE.MeshBasicMaterial({ color: 0x2d6a4f })
     );
     groundPlane.rotation.x = -Math.PI / 2;
     groundPlane.position.y = -0.5;
     dropWorldGroup.add(groundPlane);
 
-    // High-contrast ground grid (every 25 m)
-    const groundGrid = new THREE.GridHelper(30000, 60, 0x1e293b, 0x365314);
-    groundGrid.position.y = 0.2;
+    // Clean subtle ground grid (every 100 m)
+    const groundGrid = new THREE.GridHelper(30000, 15, 0x1b4332, 0x1b4332);
+    groundGrid.position.y = 0.5;
     dropWorldGroup.add(groundGrid);
 
-    // Distance rings on the ground (50 m, 100 m, 200 m, 300 m, 500 m from release point)
-    [50, 100, 200, 300, 500].forEach((distM) => {
-      const rRing = new THREE.Mesh(
-        new THREE.RingGeometry((distM - 1.2) * WORLD_SCALE, (distM + 1.2) * WORLD_SCALE, 64),
-        new THREE.MeshBasicMaterial({ color: distM === 100 || distM === 300 ? 0xdc2626 : 0xffffff, side: THREE.DoubleSide })
-      );
-      rRing.rotation.x = -Math.PI / 2;
-      rRing.position.y = 1.0;
-      dropWorldGroup.add(rRing);
-    });
-
-    // Vertical drop-line from the release point (0, alt, 0) down to the ground origin (0, 0, 0)
-    const releaseDropLineGeo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(0, 600 * WORLD_SCALE, 0)
-    ]);
-    const releaseDropLine = new THREE.Line(
-      releaseDropLineGeo,
-      new THREE.LineDashedMaterial({ color: 0x1e293b, dashSize: 40, gapSize: 25 })
+    // Single clean red bullseye target at the release origin (0, 0, 0) on the ground
+    const originTarget = new THREE.Mesh(
+      new THREE.RingGeometry(8, 55, 32),
+      new THREE.MeshBasicMaterial({ color: 0xef4444, side: THREE.DoubleSide })
     );
-    releaseDropLine.computeLineDistances();
-    dropWorldGroup.add(releaseDropLine);
+    originTarget.rotation.x = -Math.PI / 2;
+    originTarget.position.y = 1.0;
+    dropWorldGroup.add(originTarget);
 
     // Live Ground Shadow / Plumb-Line under the falling object so you always see height above ground
     const groundShadowMesh = new THREE.Mesh(
-      new THREE.RingGeometry(8, 38, 32),
-      new THREE.MeshBasicMaterial({ color: 0xdc2626, side: THREE.DoubleSide })
+      new THREE.CircleGeometry(35, 32),
+      new THREE.MeshBasicMaterial({ color: 0x0f172a, transparent: true, opacity: 0.55, side: THREE.DoubleSide })
     );
     groundShadowMesh.rotation.x = -Math.PI / 2;
     groundShadowMesh.position.y = 1.5;
@@ -608,7 +603,7 @@
     const plumbLineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 100, 0)]);
     const plumbLine = new THREE.Line(
       plumbLineGeo,
-      new THREE.LineBasicMaterial({ color: 0x0f172a, transparent: true, opacity: 0.45 })
+      new THREE.LineBasicMaterial({ color: 0x1e293b, transparent: true, opacity: 0.45 })
     );
     dropWorldGroup.add(plumbLine);
 
@@ -814,13 +809,13 @@
     trailLine.frustumCulled = false;
     scene.add(trailLine);
 
-    // Bright trajectory spheres placed along the flight path so the line is thick and unmistakable at any zoom level
+    // Bright 3D trajectory spheres placed densely along the flight path so the trail is thick and unmistakable in both Follow and Overview modes
     const trailMarkersGroup = new THREE.Group();
     scene.add(trailMarkersGroup);
     const markerSpheres = [];
-    const markerSphereGeo = new THREE.SphereGeometry(14, 10, 10);
-    const markerSphereMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
-    for (let i = 0; i < 200; i++) {
+    const markerSphereGeo = new THREE.SphereGeometry(1.0, 10, 10);
+    const markerSphereMat = new THREE.MeshBasicMaterial({ color: 0xff5500 });
+    for (let i = 0; i < 450; i++) {
       const sp = new THREE.Mesh(markerSphereGeo, markerSphereMat);
       sp.visible = false;
       trailMarkersGroup.add(sp);
@@ -862,7 +857,8 @@
       servoR: 0.0,
       servoL: 0.0,
       trail: [],
-      wsConnected: false
+      wsConnected: false,
+      ignoreWsUntilMs: 0
     };
 
     function eulerToR(roll, pitch, yaw) {
@@ -1091,60 +1087,9 @@
       return computeLocalAero();
     }
 
-    // Optional WebSocket connection to /ws/aero when running via viewer/server.py
+    // Run 100% deterministic local 6-DOF SO(3) physics in browser so resets and drops are instant with zero WebSocket race conditions!
     let ws = null;
-    try {
-      if (window.location.protocol.startsWith("http")) {
-        const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-        ws = new WebSocket(`${wsProto}//${window.location.host}/ws/aero`);
-        ws.onopen = () => {
-          simState.wsConnected = true;
-          document.getElementById("conn-badge").textContent = "Server WS /ws/aero (100 Hz)";
-        };
-        ws.onclose = () => {
-          simState.wsConnected = false;
-          document.getElementById("conn-badge").textContent = "Standalone 6-DOF Physics (100 Hz)";
-        };
-        ws.onmessage = (ev) => {
-          const d = JSON.parse(ev.data);
-          simState.roll  = d.roll_deg * Math.PI / 180.0;
-          simState.pitch = d.pitch_deg * Math.PI / 180.0;
-          simState.yaw   = d.yaw_deg * Math.PI / 180.0;
-          if (d.R_wb) {
-          simState.R_wb = d.R_wb;
-        } else {
-          simState.R_wb = eulerToR(simState.roll, simState.pitch, simState.yaw);
-        }
-          simState.p = d.gyro_xyz_rads[0];
-          simState.q = d.gyro_xyz_rads[1];
-          simState.r = d.gyro_xyz_rads[2];
-          simState.deltaR = d.delta_r_deg;
-          simState.deltaL = d.delta_l_deg;
-          simState.servoR = d.servo_r_deg;
-          simState.servoL = d.servo_l_deg;
-          simState.posN = d.position_xyz_m[0];
-          simState.posE = d.position_xyz_m[1];
-          simState.altM = d.altitude_m;
-          simState.velN = d.velocity_ned_ms[0];
-          simState.velE = d.velocity_ned_ms[1];
-          simState.velD = d.velocity_ned_ms[2];
-          if (simState.mode === "free_drop") {
-            const pt = [simState.posN * WORLD_SCALE, simState.altM * WORLD_SCALE, simState.posE * WORLD_SCALE];
-            const last = simState.trail[simState.trail.length - 1];
-            if (!last || Math.hypot(pt[0] - last[0], pt[1] - last[1], pt[2] - last[2]) > 2.0) {
-              simState.trail.push(pt);
-              if (simState.trail.length > maxTrailPts) simState.trail.shift();
-            }
-          }
-        };
-      }
-    } catch (e) {}
-
-    function sendWs(payload) {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(payload));
-      }
-    }
+    function sendWs(payload) {}
 
     // ============================================================================
     // 5. UI CONTROLS & INTERACTIVE BINDINGS
@@ -1172,14 +1117,24 @@
       dropWorldGroup.visible = !isTunnel;
       trailLine.visible = !isTunnel;
       trailMarkersGroup.visible = !isTunnel;
+      document.getElementById("traj-map-box").style.display = isTunnel ? "none" : "block";
 
-      // Switch between Dark Wind-Tunnel Enclosure and Bright Daylight Sky + Green Ground
-      scene.background = new THREE.Color(isTunnel ? 0x05080f : 0xbae6fd);
-      scene.fog = new THREE.FogExp2(isTunnel ? 0x05080f : 0xbae6fd, isTunnel ? 0.00018 : 0.00004);
+      // Switch between Dark Wind-Tunnel Enclosure and Crisp Sky Blue + Flat Matte Green Ground (Zero Fog!)
+      scene.background = new THREE.Color(isTunnel ? 0x05080f : 0x38bdf8);
+      scene.fog = null;
 
       if (dropAlt !== null) simState.dropAltitudeInit = dropAlt;
+      simState.paused = false;
+      btnPause.textContent = "Pause";
+      btnPause.classList.remove("active");
+
+      // Completely wipe previous trajectory trail buffer and spheres
       simState.trail = [];
+      trailPositions.fill(0);
+      trailGeo.attributes.position.needsUpdate = true;
+      trailGeo.setDrawRange(0, 0);
       for (const sp of markerSpheres) sp.visible = false;
+
       if (isTunnel) {
         simState.roll = 0.0;
         simState.pitch = 14.0 * Math.PI / 180.0;
@@ -1202,9 +1157,11 @@
         simState.velN = 0.0;
         simState.velE = 0.0;
         simState.velD = 0.1;
-        simState.trail.push([0, simState.altM * WORLD_SCALE, 0]);
-        vehicleGroup.position.set(0, simState.altM * WORLD_SCALE, 0);
-        setCamPreset(camPreset);
+        const startY = simState.altM * WORLD_SCALE;
+        simState.trail = [[0, startY, 0]];
+        vehicleGroup.position.set(0, startY, 0);
+        // Always start focused directly on the object at the release point!
+        setCamPreset("follow");
       }
       sendWs({ type: "set_mode", mode: newMode, altitude_m: simState.dropAltitudeInit, airspeed_ms: simState.tunnelAirspeed });
     }
@@ -1321,13 +1278,20 @@
       document.getElementById("cam-side").classList.toggle("active", p === "side");
       document.getElementById("cam-rear").classList.toggle("active", p === "rear");
       const target = vehicleGroup.position.clone();
-      if (p === "follow")   camera.position.copy(target).add(new THREE.Vector3(-230, 125, 250));
-      if (p === "side")     camera.position.copy(target).add(new THREE.Vector3(0, 20, 340));
-      if (p === "rear")     camera.position.copy(target).add(new THREE.Vector3(-310, 45, 0));
+      // Position Follow Camera at (-280, +65, +310) so you see the full aircraft, the orange trajectory trail above/behind its tail, the Blue Sky above, and the Green Ground below!
+      if (p === "follow")   camera.position.copy(target).add(new THREE.Vector3(-280, 65, 310));
+      if (p === "side")     camera.position.copy(target).add(new THREE.Vector3(0, 35, 380));
+      if (p === "rear")     camera.position.copy(target).add(new THREE.Vector3(-340, 45, 0));
       if (p === "overview") {
-        const midY = (simState.dropAltitudeInit * WORLD_SCALE) * 0.45;
-        controls.target.set(80 * WORLD_SCALE, midY, 0);
-        camera.position.set(80 * WORLD_SCALE, midY + 1200, 5800);
+        // Frame the entire trajectory in the clear center-right of the viewport (away from the top-left HUD box!)
+        const hTop = simState.dropAltitudeInit * WORLD_SCALE;
+        const curX = Math.max(0, simState.posN * WORLD_SCALE);
+        const curZ = simState.posE * WORLD_SCALE;
+        const centerX = Math.max(110 * WORLD_SCALE, curX * 0.45);
+        const centerY = hTop * 0.48;
+        const span = Math.max(hTop * 1.45, Math.abs(curX) * 1.35, 240 * WORLD_SCALE);
+        controls.target.set(centerX, centerY, curZ * 0.5);
+        camera.position.set(centerX - span * 0.12, centerY + span * 0.08, curZ * 0.5 + span * 1.38);
         controls.update();
         return;
       }
@@ -1371,9 +1335,9 @@
         const vy = simState.altM * WORLD_SCALE;
         const vz = simState.posE * WORLD_SCALE;
         vehicleGroup.position.set(vx, vy, vz);
-        // Scale vehicle dynamically when in Overview mode so it is never too small to see!
+        // Scale vehicle dynamically when in Overview mode so it is ALWAYS big and clearly visible!
         const camDist = camera.position.distanceTo(vehicleGroup.position);
-        const sVis = camPreset === "overview" ? Math.max(1.0, Math.min(8.0, camDist / 450.0)) : 1.0;
+        const sVis = camPreset === "overview" ? Math.max(1.0, Math.min(22.0, camDist / 260.0)) : 1.0;
         vehicleGroup.scale.set(sVis, sVis, sVis);
 
         // Update live ground shadow & vertical plumb line under the missile
@@ -1383,7 +1347,15 @@
         pPos.setXYZ(1, vx, vy, vz);
         pPos.needsUpdate = true;
 
-        if (camPreset !== "overview") {
+        if (camPreset === "overview") {
+          // Dynamically keep the entire trajectory centered in the open viewport (to the right of the HUD card)
+          const hTop = simState.dropAltitudeInit * WORLD_SCALE;
+          const centerX = Math.max(110 * WORLD_SCALE, vx * 0.45);
+          const centerY = hTop * 0.48;
+          const span = Math.max(hTop * 1.45, Math.abs(vx) * 1.35, 240 * WORLD_SCALE);
+          controls.target.set(centerX, centerY, vz * 0.5);
+          camera.position.set(centerX - span * 0.12, centerY + span * 0.08, vz * 0.5 + span * 1.38);
+        } else {
           const deltaPos = vehicleGroup.position.clone().sub(prevPos);
           camera.position.add(deltaPos);
           controls.target.copy(vehicleGroup.position);
@@ -1453,10 +1425,12 @@
         trailGeo.setDrawRange(0, nPts);
 
         const stepM = Math.max(1, Math.floor(nPts / markerSpheres.length));
+        const markerRad = camPreset === "overview" ? 32.0 : 5.5;
         for (let m = 0; m < markerSpheres.length; m++) {
           const idx = m * stepM;
           if (idx < nPts) {
             markerSpheres[m].visible = true;
+            markerSpheres[m].scale.set(markerRad, markerRad, markerRad);
             markerSpheres[m].position.set(simState.trail[idx][0], simState.trail[idx][1], simState.trail[idx][2]);
           } else {
             markerSpheres[m].visible = false;
@@ -1505,6 +1479,79 @@
       controls.update();
       renderer.render(scene, camera);
       drawAxesGizmo();
+      if (simState.mode === "free_drop") {
+        drawTrajMap2D();
+      }
+    }
+
+    // Live 2D Side-Profile Trajectory Map (Bottom-Right in Free-Drop Mode)
+    const trajMapCanvas = document.getElementById("traj-map-canvas");
+    const trajMapCtx = trajMapCanvas.getContext("2d");
+
+    function drawTrajMap2D() {
+      const W = trajMapCanvas.width, H = trajMapCanvas.height;
+      trajMapCtx.clearRect(0, 0, W, H);
+
+      // Sky background (top) & Green ground strip (bottom 18px)
+      const groundY = H - 20;
+      trajMapCtx.fillStyle = "#0c192c";
+      trajMapCtx.fillRect(0, 0, W, groundY);
+      trajMapCtx.fillStyle = "#2d6a4f";
+      trajMapCtx.fillRect(0, groundY, W, 20);
+
+      const maxAlt = Math.max(100, simState.dropAltitudeInit * 1.08);
+      const curHoriz = Math.hypot(simState.posN, simState.posE);
+      const maxDist = Math.max(simState.dropAltitudeInit * 1.25, curHoriz * 1.15, 120);
+
+      const mapX = (dM) => 34 + (dM / maxDist) * (W - 48);
+      const mapY = (altM) => groundY - (altM / maxAlt) * (groundY - 14);
+
+      // Grid lines
+      trajMapCtx.strokeStyle = "#1e293b";
+      trajMapCtx.lineWidth = 1;
+      for (let f = 0.25; f <= 1.0; f += 0.25) {
+        const gy = mapY(simState.dropAltitudeInit * f);
+        trajMapCtx.beginPath(); trajMapCtx.moveTo(34, gy); trajMapCtx.lineTo(W - 10, gy); trajMapCtx.stroke();
+      }
+
+      // Draw trajectory curve from release (0, H0) to current position
+      if (simState.trail.length > 0) {
+        trajMapCtx.strokeStyle = "#f97316";
+        trajMapCtx.lineWidth = 2.6;
+        trajMapCtx.beginPath();
+        for (let i = 0; i < simState.trail.length; i++) {
+          const pt = simState.trail[i];
+          const dM = Math.hypot(pt[0], pt[2]) / WORLD_SCALE;
+          const aM = pt[1] / WORLD_SCALE;
+          const px = mapX(dM), py = mapY(aM);
+          if (i === 0) trajMapCtx.moveTo(px, py);
+          else trajMapCtx.lineTo(px, py);
+        }
+        trajMapCtx.stroke();
+      }
+
+      // Release point dot (top-left)
+      trajMapCtx.fillStyle = "#ef4444";
+      trajMapCtx.beginPath();
+      trajMapCtx.arc(mapX(0), mapY(simState.dropAltitudeInit), 4, 0, Math.PI * 2);
+      trajMapCtx.fill();
+
+      // Current missile dot
+      const cx = mapX(curHoriz), cy = mapY(simState.altM);
+      trajMapCtx.fillStyle = "#4ade80";
+      trajMapCtx.beginPath();
+      trajMapCtx.arc(cx, cy, 5, 0, Math.PI * 2);
+      trajMapCtx.fill();
+
+      // Axis labels
+      trajMapCtx.fillStyle = "#cbd5e1";
+      trajMapCtx.font = "10px sans-serif";
+      trajMapCtx.fillText(`${simState.dropAltitudeInit.toFixed(0)}m`, 3, mapY(simState.dropAltitudeInit) + 4);
+      trajMapCtx.fillText("0m", 12, groundY - 2);
+      trajMapCtx.fillText("0m", 30, H - 5);
+      trajMapCtx.fillText(`${maxDist.toFixed(0)}m`, W - 36, H - 5);
+
+      document.getElementById("traj-range-lbl").textContent = `Dist: ${curHoriz.toFixed(1)} m | Alt: ${simState.altM.toFixed(1)} m`;
     }
 
     // 3-Arrow X, Y, Z Coordinate Axis Gizmo Renderer (Bottom-Left)

@@ -53,12 +53,12 @@ STAGE_MODELS = load_stage_models()
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(VIEWER_HTML)
+    return FileResponse(VIEWER_HTML, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 
 @app.get("/aero")
 async def aero_viewer() -> FileResponse:
-    return FileResponse(AERO_HTML)
+    return FileResponse(AERO_HTML, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 
 @app.get("/api/aero-config")
