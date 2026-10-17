@@ -392,6 +392,41 @@
         <div id="rl-status-line" style="margin-top:7px;font-size:11.5px;color:#93c5fd;">
           Controller: <strong>Manual Sliders</strong> (Click any RL Stage above to watch the trained neural network pull out of the dive and glide!)
         </div>
+
+        <hr style="border:none;border-top:1px solid #1e293b;margin:10px 0;" />
+        <h2>Interactive Live GPS Target Control (Move Target Mid-Flight!)</h2>
+        <div style="font-size:11px;color:#cbd5e1;margin-bottom:8px;">
+          Move the sliders below, click the quick-shift buttons, or <strong>Shift + Click anywhere on the 3D green ground</strong> while the glider is flying to watch it bank toward the new coordinate in real time!
+        </div>
+        <div class="slider-row">
+          <span>Target North (X)</span>
+          <input type="range" id="sl-gps-n" min="250" max="1350" step="5" value="980" />
+          <strong id="val-gps-n" style="text-align:right;color:#4ade80;">980 m</strong>
+        </div>
+        <div class="slider-row">
+          <span>Target East (Y)</span>
+          <input type="range" id="sl-gps-e" min="-700" max="700" step="5" value="280" />
+          <strong id="val-gps-e" style="text-align:right;color:#4ade80;">+280 m</strong>
+        </div>
+        <div class="slider-row">
+          <span>Target Speed</span>
+          <input type="range" id="sl-gps-spd" min="0" max="25" step="0.5" value="0" />
+          <strong id="val-gps-spd" style="text-align:right;color:#38bdf8;">0.0 m/s</strong>
+        </div>
+        <div class="slider-row">
+          <span>Target Heading</span>
+          <input type="range" id="sl-gps-hdg" min="-180" max="180" step="5" value="0" />
+          <strong id="val-gps-hdg" style="text-align:right;color:#38bdf8;">0°</strong>
+        </div>
+        <div class="btn-row" style="margin-top:6px;">
+          <button id="btn-gps-left">Jump Left (-380m E)</button>
+          <button id="btn-gps-center">Center (0m E)</button>
+          <button id="btn-gps-right">Jump Right (+380m E)</button>
+          <button id="btn-gps-reverse">Reverse Target Vel</button>
+        </div>
+        <div id="gps-live-readout" style="margin-top:6px;font-size:11.5px;color:#facc15;font-family:monospace;">
+          Target: (N=980m, E=+280m) | Dist Error: -- m
+        </div>
       </div>
 
       <!-- Wing Flap & 4-Bar Servo Controls -->
@@ -942,6 +977,42 @@
       maneuver2: [4.0, 14.0]
     };
 
+    function syncGpsUiFromState() {
+      const slN = document.getElementById("sl-gps-n");
+      const slE = document.getElementById("sl-gps-e");
+      const slSpd = document.getElementById("sl-gps-spd");
+      const slHdg = document.getElementById("sl-gps-hdg");
+      if (!slN) return;
+      slN.value = Math.round(gpsState.posN);
+      slE.value = Math.round(gpsState.posE);
+      document.getElementById("val-gps-n").textContent = `${Math.round(gpsState.posN)} m`;
+      document.getElementById("val-gps-e").textContent = `${gpsState.posE >= 0 ? "+" : ""}${Math.round(gpsState.posE)} m`;
+      const spd = Math.hypot(gpsState.velN, gpsState.velE);
+      const hdg = spd > 0.1 ? Math.round(Math.atan2(gpsState.velE, gpsState.velN) * 180 / Math.PI) : 0;
+      slSpd.value = spd.toFixed(1);
+      slHdg.value = hdg;
+      document.getElementById("val-gps-spd").textContent = `${spd.toFixed(1)} m/s`;
+      document.getElementById("val-gps-hdg").textContent = `${hdg >= 0 ? "+" : ""}${hdg}°`;
+      const err = Math.hypot(gpsState.posN - simState.posN, gpsState.posE - simState.posE);
+      document.getElementById("gps-live-readout").textContent =
+        `Target: (N=${gpsState.posN.toFixed(0)}m, E=${gpsState.posE >= 0 ? "+" : ""}${gpsState.posE.toFixed(0)}m) | Dist Error: ${err.toFixed(1)} m`;
+    }
+
+    function ensureGpsPolicyActive() {
+      if (!activeRlStage.startsWith("gps_")) {
+        activeRlStage = "gps_3_aggressive";
+        document.querySelectorAll(".rl-btn").forEach((b) => {
+          b.classList.toggle("active", b.dataset.rl === activeRlStage);
+        });
+        const m = GLIDE_RL_MODELS[activeRlStage];
+        document.getElementById("rl-status-line").innerHTML =
+          `Active GPS Policy: <strong>${m.stage_label}</strong> (Interactive Real-Time Target Tracking)`;
+      }
+      gpsState.active = true;
+      gpsTargetGroup.visible = simState.mode === "free_drop";
+      gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
+    }
+
     function resetGpsTargetForStage(stageId) {
       gpsState.stepCount = 0;
       if (stageId === "gps_1_static") {
@@ -974,6 +1045,7 @@
       if (gpsState.active) {
         gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
       }
+      syncGpsUiFromState();
     }
 
     function runRlActor(stageId, obsVec) {
@@ -1221,19 +1293,20 @@
                 gpsState.velE = gpsState.maneuver2[1];
               }
             }
-            if (gpsState.mode === "linear" || gpsState.mode === "aggressive") {
+            if (gpsState.mode === "linear" || gpsState.mode === "aggressive" || Math.hypot(gpsState.velN, gpsState.velE) > 0.05) {
               gpsState.posN += gpsState.velN * 0.05;
               gpsState.posE += gpsState.velE * 0.05;
-              if (gpsState.posN < 350.0 || gpsState.posN > 1150.0) {
+              if (gpsState.posN < 250.0 || gpsState.posN > 1350.0) {
                 gpsState.velN *= -1.0;
-                gpsState.posN = Math.max(350.0, Math.min(1150.0, gpsState.posN));
+                gpsState.posN = Math.max(250.0, Math.min(1350.0, gpsState.posN));
               }
-              if (gpsState.posE < -650.0 || gpsState.posE > 650.0) {
+              if (gpsState.posE < -700.0 || gpsState.posE > 700.0) {
                 gpsState.velE *= -1.0;
-                gpsState.posE = Math.max(-650.0, Math.min(650.0, gpsState.posE));
+                gpsState.posE = Math.max(-700.0, Math.min(700.0, gpsState.posE));
               }
             }
             gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
+            syncGpsUiFromState();
           }
 
           const V = Math.hypot(simState.velN, simState.velE, simState.velD);
@@ -1511,6 +1584,79 @@
     document.getElementById("btn-drop-1000").onclick = () => {
       slDropAlt.value = 1000; slDropAlt.oninput(); setMode("free_drop", 1000);
     };
+
+    // Interactive Real-Time GPS Target Sliders, Quick-Shift Buttons, and 3D Ground Click
+    const slGpsN = document.getElementById("sl-gps-n");
+    const slGpsE = document.getElementById("sl-gps-e");
+    const slGpsSpd = document.getElementById("sl-gps-spd");
+    const slGpsHdg = document.getElementById("sl-gps-hdg");
+
+    function updateGpsFromSliders() {
+      ensureGpsPolicyActive();
+      gpsState.posN = Number(slGpsN.value);
+      gpsState.posE = Number(slGpsE.value);
+      const spd = Number(slGpsSpd.value);
+      const hdgRad = Number(slGpsHdg.value) * Math.PI / 180.0;
+      gpsState.velN = spd * Math.cos(hdgRad);
+      gpsState.velE = spd * Math.sin(hdgRad);
+      gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
+      syncGpsUiFromState();
+    }
+
+    slGpsN.oninput = updateGpsFromSliders;
+    slGpsE.oninput = updateGpsFromSliders;
+    slGpsSpd.oninput = updateGpsFromSliders;
+    slGpsHdg.oninput = updateGpsFromSliders;
+
+    document.getElementById("btn-gps-left").onclick = () => {
+      ensureGpsPolicyActive();
+      gpsState.posE = -380.0;
+      gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
+      syncGpsUiFromState();
+    };
+    document.getElementById("btn-gps-center").onclick = () => {
+      ensureGpsPolicyActive();
+      gpsState.posE = 0.0;
+      gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
+      syncGpsUiFromState();
+    };
+    document.getElementById("btn-gps-right").onclick = () => {
+      ensureGpsPolicyActive();
+      gpsState.posE = +380.0;
+      gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
+      syncGpsUiFromState();
+    };
+    document.getElementById("btn-gps-reverse").onclick = () => {
+      ensureGpsPolicyActive();
+      if (Math.hypot(gpsState.velN, gpsState.velE) < 1.0) {
+        gpsState.velN = 4.0;
+        gpsState.velE = 15.0;
+      } else {
+        gpsState.velN *= -1.0;
+        gpsState.velE *= -1.0;
+      }
+      syncGpsUiFromState();
+    };
+
+    // Shift + Click anywhere on the 3D green ground to move the GPS target in real time while flying!
+    const raycasterGps = new THREE.Raycaster();
+    const mouseNdc = new THREE.Vector2();
+    renderer.domElement.addEventListener("pointerdown", (ev) => {
+      if (!ev.shiftKey || simState.mode !== "free_drop") return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouseNdc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      mouseNdc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      raycasterGps.setFromCamera(mouseNdc, camera);
+      const hits = raycasterGps.intersectObject(groundPlane, false);
+      if (hits.length > 0) {
+        const pt = hits[0].point;
+        ensureGpsPolicyActive();
+        gpsState.posN = Math.max(250.0, Math.min(1350.0, pt.x / WORLD_SCALE));
+        gpsState.posE = Math.max(-700.0, Math.min(700.0, pt.z / WORLD_SCALE));
+        gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
+        syncGpsUiFromState();
+      }
+    });
 
     function syncServosFromFlaps(dR, dL) {
       simState.cmdDeltaR = Math.max(-MAX_WING_FLAP_DEG, Math.min(MAX_WING_FLAP_DEG, dR));
