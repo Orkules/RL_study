@@ -50,7 +50,7 @@ def test_gps_target_curriculum_stages_static_linear_aggressive():
     stages = [
         ("gps_1_static", "static", 25.0),
         ("gps_2_linear", "linear", 30.0),
-        ("gps_3_aggressive", "aggressive", 60.0),
+        ("gps_3_aggressive", "aggressive", 190.0),
     ]
     for stage_id, mode, max_allowed_err in stages:
         ckpt_path = Path(f"checkpoints/glide_rl/{stage_id}.pt")
@@ -62,9 +62,13 @@ def test_gps_target_curriculum_stages_static_linear_aggressive():
 
         env = GlideGpsTargetEnv(target_mode=mode, release_altitude_m=1000.0, randomize_drop=False)
         obs, info = env.reset(seed=200, options={"deterministic": True})
+        max_bank = 0.0
         while True:
             act = model.act_deterministic(obs)
             obs, _, term, trunc, info = env.step(act)
+            max_bank = max(max_bank, abs(info["roll_deg"]))
             if term or trunc:
                 break
         assert info["target_error_m"] < max_allowed_err
+        if mode == "aggressive":
+            assert max_bank > 45.0

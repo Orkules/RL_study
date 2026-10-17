@@ -27,18 +27,18 @@ def guidance_teacher_action(obs: np.ndarray, lead_gain: float = 0.65) -> np.ndar
     tv_y = float(obs[12])
 
     vz_mps = max(12.0, vd_norm * 50.0)
-    t_go = min(35.0, (alt_n * 1000.0) / vz_mps)
+    t_go = min(22.0, (alt_n * 1000.0) / vz_mps)
     pred_x = rel_x + (tv_x * 25.0 * lead_gain * t_go) / 1000.0
     pred_y = rel_y + (tv_y * 25.0 * lead_gain * t_go) / 1000.0
 
     horiz_dist = float(np.hypot(pred_x, pred_y))
     req_glide_ratio = horiz_dist / max(0.04, alt_n)
-    pitch_cmd = float(np.clip(0.05 + 0.42 * (req_glide_ratio - 0.35), 0.05, 0.65))
+    pitch_cmd = float(np.clip(0.05 + 0.42 * (req_glide_ratio - 0.35), 0.05, 0.72))
 
-    pullout_gate = float(np.clip((pitch_n + 0.82) * 3.0, 0.0, 1.0))
+    pullout_gate = float(np.clip((pitch_n + 0.82) * 3.2, 0.0, 1.0))
     bearing = float(np.arctan2(pred_y, max(0.04, pred_x)))
-    desired_roll = float(np.clip(1.35 * bearing, -0.52, 0.52)) * pullout_gate
-    roll_cmd = float(np.clip(0.9 * (desired_roll - sin_roll) - 0.32 * p_norm - 0.15 * r_norm, -1.0, 1.0))
+    desired_roll = float(np.clip(1.95 * bearing, -0.85, 0.85)) * pullout_gate
+    roll_cmd = float(np.clip(1.35 * (desired_roll - sin_roll) - 0.28 * p_norm - 0.12 * r_norm, -1.0, 1.0))
     return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
 
 
@@ -326,7 +326,7 @@ def train_all_gps_stages() -> Dict[str, Any]:
         stage_id="gps_1_static",
         stage_label="GPS Stage 1: Static Desired Coordinate",
         lead_gain=0.0,
-        num_updates=8,
+        num_updates=6,
         lr=1.5e-4,
         seed=101,
         ckpt_dir=ckpt_dir,
@@ -339,7 +339,7 @@ def train_all_gps_stages() -> Dict[str, Any]:
         stage_id="gps_2_linear",
         stage_label="GPS Stage 2: Linear Straight-Line Moving Coordinate",
         lead_gain=0.65,
-        num_updates=8,
+        num_updates=6,
         lr=1.5e-4,
         seed=202,
         ckpt_dir=ckpt_dir,
@@ -351,8 +351,8 @@ def train_all_gps_stages() -> Dict[str, Any]:
         target_mode="aggressive",
         stage_id="gps_3_aggressive",
         stage_label="GPS Stage 3: Aggressive Maneuvering Coordinate",
-        lead_gain=0.65,
-        num_updates=10,
+        lead_gain=0.35,
+        num_updates=6,
         lr=1.5e-4,
         seed=303,
         ckpt_dir=ckpt_dir,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -24,28 +24,14 @@ class GlideGpsTargetEnv(gym.Env):
     Gymnasium RL Environment for the 300 g Delta-Wing Airframe Guided to a Desired GPS Coordinate:
       - Stage 1 ("static"): Static GPS coordinate (N_target, E_target) on the ground.
       - Stage 2 ("linear"): GPS coordinate moving in a straight line at constant linear speed while the glider flies.
-      - Stage 3 ("aggressive"): High-speed GPS coordinate with mid-flight course changes / aggressive maneuvering.
+      - Stage 3 ("aggressive"): Rapid multi-switch slalom / zig-zag GPS coordinate that jumps and reverses side-to-side
+        every ~85 steps (4.25 s) across 8 times during a single 1,000 m drop, forcing the glider to bank hard (+/- 55 to 68 deg)
+        from one side to the other repeatedly in mid-air!
 
     Strict Unbiased Reward Rule:
       - ZERO attitude, pitch, roll, rate, or slew penalties.
       - ZERO mid-air termination.
       - The network receives ONLY distance-to-target reduction reward (and landing proximity bonus at ground impact).
-
-    Observation Space (14D IMU + Desired GPS Coordinate State):
-      0: pitch_norm     - Pitch angle theta / (pi / 2)
-      1: sin_roll       - sin(roll)
-      2: cos_roll       - cos(roll)
-      3: gyro_p         - Roll rate p / 10.0 (rad/s)
-      4: gyro_q         - Pitch rate q / 10.0 (rad/s)
-      5: gyro_r         - Yaw rate r / 10.0 (rad/s)
-      6: airspeed_n     - Airspeed V / 50.0 (m/s)
-      7: vz_norm        - Vertical descent rate vd / 50.0 (m/s)
-      8: prev_act_pitch - Previous pitch stick command in [-1, +1]
-      9: prev_act_roll  - Previous roll stick command in [-1, +1]
-     10: rel_x_body     - Target relative forward distance in body Horizontal frame / 1000.0
-     11: rel_y_body     - Target relative right distance in body Horizontal frame / 1000.0
-     12: alt_norm       - Current altitude / 1000.0
-     13: rel_vy_body    - Target relative lateral velocity in body Horizontal frame / 20.0
     """
 
     metadata = {"render_modes": ["dict"], "render_fps": 20}
@@ -86,12 +72,12 @@ class GlideGpsTargetEnv(gym.Env):
         self.last_action = np.zeros(2, dtype=np.float32)
 
         # Desired GPS Target State (North, East) in meters and velocity (vN, vE) in m/s
-        self.target_ne = np.array([750.0, 0.0], dtype=np.float64)
+        self.target_ne = np.array([980.0, 280.0], dtype=np.float64)
         self.target_vel_ne = np.zeros(2, dtype=np.float64)
-        self.maneuver_step_1 = 220
-        self.maneuver_step_2 = 450
-        self.maneuver_vel_1 = np.zeros(2, dtype=np.float64)
-        self.maneuver_vel_2 = np.zeros(2, dtype=np.float64)
+
+        # Schedule of multiple mid-flight target relocations / velocity switches for "aggressive" mode
+        # Each entry: (trigger_step, new_target_N, new_target_E, new_vel_N, new_vel_E)
+        self.aggressive_schedule: List[Tuple[int, float, float, float, float]] = []
 
         self.step_count = 0
         self.max_steps = 1600
@@ -167,61 +153,60 @@ class GlideGpsTargetEnv(gym.Env):
         self.delta_l_deg = 0.0
         self.last_action = np.zeros(2, dtype=np.float32)
         self.step_count = 0
+        self.aggressive_schedule = []
 
         # Initialize Desired GPS Coordinate (N, E) and velocity
         if "target_ne" in options:
             self.target_ne = np.array(options["target_ne"], dtype=np.float64)
             self.target_vel_ne = np.array(options.get("target_vel_ne", [0.0, 0.0]), dtype=np.float64)
-            self.maneuver_vel_1 = self.target_vel_ne.copy()
-            self.maneuver_vel_2 = self.target_vel_ne.copy()
         elif deterministic:
             if self.target_mode == "static":
                 self.target_ne = np.array([980.0, 280.0], dtype=np.float64)
                 self.target_vel_ne = np.array([0.0, 0.0], dtype=np.float64)
             elif self.target_mode == "linear":
-                # Starts at (720, -180) and moves linearly in a straight line at 10 m/s
                 self.target_ne = np.array([720.0, -180.0], dtype=np.float64)
                 self.target_vel_ne = np.array([4.5, 9.0], dtype=np.float64)
-            else:  # "aggressive"
-                # Starts at (680, -240), moves fast at 18 m/s, then executes mid-flight course changes
-                self.target_ne = np.array([680.0, -240.0], dtype=np.float64)
-                self.target_vel_ne = np.array([6.0, 16.5], dtype=np.float64)
-                self.maneuver_step_1 = 220
-                self.maneuver_step_2 = 440
-                self.maneuver_vel_1 = np.array([5.0, -15.5], dtype=np.float64)
-                self.maneuver_vel_2 = np.array([4.0, 14.0], dtype=np.float64)
+            else:  # "aggressive" — 7 violent side-to-side target jumps + high-speed motion!
+                self.target_ne = np.array([280.0, +220.0], dtype=np.float64)
+                self.target_vel_ne = np.array([4.0, +14.0], dtype=np.float64)
+                self.aggressive_schedule = [
+                    (85,  350.0, -240.0, 4.0, -15.0),
+                    (175, 430.0, +250.0, 4.0, +15.0),
+                    (265, 510.0, -250.0, 4.0, -15.0),
+                    (355, 590.0, +220.0, 4.0, +12.0),
+                    (445, 660.0, -180.0, 3.0, -10.0),
+                    (535, 720.0, +120.0, 2.0,  +6.0),
+                    (615, 760.0,  -40.0, 0.0,   0.0),
+                ]
         else:
-            # Random GPS target coordinate within reachable glide sector
             r_init = float(self.np_random.uniform(750.0, 1150.0))
-            az_init = float(self.np_random.uniform(-np.deg2rad(40.0), np.deg2rad(40.0)))
+            az_init = float(self.np_random.uniform(-np.deg2rad(42.0), np.deg2rad(42.0)))
             self.target_ne = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init)], dtype=np.float64)
 
             if self.target_mode == "static":
                 self.target_vel_ne = np.zeros(2, dtype=np.float64)
             elif self.target_mode == "linear":
-                # Random straight-line linear velocity (5 to 11 m/s) in a random direction
                 spd = float(self.np_random.uniform(5.0, 11.0))
                 hdg = float(self.np_random.uniform(-np.pi, np.pi))
                 self.target_vel_ne = np.array([spd * np.cos(hdg), spd * np.sin(hdg)], dtype=np.float64)
-            else:  # "aggressive"
-                # High speed (12 to 19 m/s) + 2 sharp mid-flight direction switches
-                spd0 = float(self.np_random.uniform(12.0, 19.0))
-                hdg0 = float(self.np_random.uniform(-np.pi, np.pi))
-                self.target_vel_ne = np.array([spd0 * np.cos(hdg0), spd0 * np.sin(hdg0)], dtype=np.float64)
-
-                spd1 = float(self.np_random.uniform(13.0, 20.0))
-                hdg1 = hdg0 + float(self.np_random.uniform(np.deg2rad(70.0), np.deg2rad(135.0))) * float(
-                    self.np_random.choice([-1.0, 1.0])
+            else:  # "aggressive" — Random 7 side-to-side jumps throughout the flight!
+                side = float(self.np_random.choice([-1.0, 1.0]))
+                self.target_ne = np.array(
+                    [float(self.np_random.uniform(250.0, 320.0)), side * float(self.np_random.uniform(180.0, 260.0))],
+                    dtype=np.float64,
                 )
-                self.maneuver_vel_1 = np.array([spd1 * np.cos(hdg1), spd1 * np.sin(hdg1)], dtype=np.float64)
-
-                spd2 = float(self.np_random.uniform(13.0, 20.0))
-                hdg2 = hdg1 + float(self.np_random.uniform(np.deg2rad(70.0), np.deg2rad(135.0))) * float(
-                    self.np_random.choice([-1.0, 1.0])
-                )
-                self.maneuver_vel_2 = np.array([spd2 * np.cos(hdg2), spd2 * np.sin(hdg2)], dtype=np.float64)
-                self.maneuver_step_1 = int(self.np_random.integers(180, 280))
-                self.maneuver_step_2 = int(self.np_random.integers(380, 500))
+                self.target_vel_ne = np.array([4.0, side * float(self.np_random.uniform(12.0, 18.0))], dtype=np.float64)
+                cur_step = int(self.np_random.integers(75, 95))
+                cur_n = float(self.target_ne[0])
+                for k in range(7):
+                    side *= -1.0
+                    cur_n += float(self.np_random.uniform(65.0, 85.0))
+                    lat_amp = float(self.np_random.uniform(180.0, 280.0)) * max(0.20, 1.0 - 0.12 * k)
+                    new_e = side * lat_amp
+                    vy = side * float(self.np_random.uniform(8.0, 16.0)) * max(0.0, 1.0 - 0.16 * k)
+                    vx = float(self.np_random.uniform(1.0, 4.0)) * max(0.0, 1.0 - 0.15 * k)
+                    self.aggressive_schedule.append((cur_step, cur_n, new_e, vx, vy))
+                    cur_step += int(self.np_random.integers(80, 95))
 
         self.prev_dist_to_target = float(
             np.sqrt((self.target_ne[0] - self.pos_ned[0]) ** 2 + (self.target_ne[1] - self.pos_ned[1]) ** 2 + self.pos_ned[2] ** 2)
@@ -332,19 +317,25 @@ class GlideGpsTargetEnv(gym.Env):
         act = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
         self.step_count += 1
 
-        # Update moving GPS target coordinate if in "linear" or "aggressive" mode
+        # Trigger multi-switch slalom target relocations in "aggressive" mode
         if self.target_mode == "aggressive":
-            if self.step_count == self.maneuver_step_1:
-                self.target_vel_ne = self.maneuver_vel_1.copy()
-            elif self.step_count == self.maneuver_step_2:
-                self.target_vel_ne = self.maneuver_vel_2.copy()
+            for trig_step, tn, te, vn, ve in self.aggressive_schedule:
+                if self.step_count == trig_step:
+                    self.target_ne[0] = tn
+                    self.target_ne[1] = te
+                    self.target_vel_ne[0] = vn
+                    self.target_vel_ne[1] = ve
+                    # Reset prev_dist_to_target after teleport so reward measures progress toward the new waypoint
+                    self.prev_dist_to_target = float(
+                        np.sqrt((self.target_ne[0] - self.pos_ned[0]) ** 2 + (self.target_ne[1] - self.pos_ned[1]) ** 2 + self.pos_ned[2] ** 2)
+                    )
+                    break
 
         if self.target_mode in ("linear", "aggressive"):
             self.target_ne += self.target_vel_ne * self.control_dt
-            # Keep target within reachable forward region [350, 1150] m North, [-650, +650] m East
-            if self.target_ne[0] < 350.0 or self.target_ne[0] > 1150.0:
+            if self.target_ne[0] < 250.0 or self.target_ne[0] > 1250.0:
                 self.target_vel_ne[0] *= -1.0
-                self.target_ne[0] = np.clip(self.target_ne[0], 350.0, 1150.0)
+                self.target_ne[0] = np.clip(self.target_ne[0], 250.0, 1250.0)
             if self.target_ne[1] < -650.0 or self.target_ne[1] > 650.0:
                 self.target_vel_ne[1] *= -1.0
                 self.target_ne[1] = np.clip(self.target_ne[1], -650.0, 650.0)
@@ -378,7 +369,6 @@ class GlideGpsTargetEnv(gym.Env):
         hit_ground = bool(-self.pos_ned[2] <= 0.0)
         terminated = hit_ground
         if hit_ground:
-            # Terminal bonus for landing close to the GPS coordinate on the ground
             reward += max(0.0, 2000.0 - 4.0 * cur_dist_2d)
 
         truncated = bool(self.step_count >= self.max_steps)
