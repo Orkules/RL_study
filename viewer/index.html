@@ -279,12 +279,12 @@
       // 1. Servo Shaft Pins flush inside WING MOTOR ARM hub (Y=35.962 mm, Z=±6.763 mm, |X|=10.0..23.2 mm)
       const servoPinR = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 13.2, 20), pinMat);
       servoPinR.rotation.z = Math.PI / 2;
-      servoPinR.position.set(16.6, 35.962, 6.763);
+      servoPinR.position.set(16.6, 35.895, 7.000);
       root.add(servoPinR);
 
       const servoPinL = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 13.2, 20), pinMat);
       servoPinL.rotation.z = Math.PI / 2;
-      servoPinL.position.set(-16.6, 35.962, -6.763);
+      servoPinL.position.set(-16.6, 35.895, -7.000);
       root.add(servoPinL);
 
       // 2. Wing Flap Hinge Pins passing directly through the inner and outer Ø2.0 mm holes in BODY.STL
@@ -371,14 +371,20 @@
     // - WING FLAP: Hinge hole (Z=14.342, Y=20.216) aligned 100% with BODY Hinge Hole (0.000, 21.294); Horn hole at dZ0=12.547, dY0=-3.969 (R_flap=13.160 mm)
     function transformSideMeshes(servoDegRaw, side, mArm, mRod, mFlap, pinUpper, pinLower) {
       const servoDeg = Math.max(MIN_SERVO_DEG, Math.min(MAX_SERVO_DEG, servoDegRaw));
-      const R_arm = 13.000, L_rod = 17.478, Yh_up = 21.294, Zh_dep = 0.000;
-      const dZ0 = 12.547, dY0 = -3.969;
-      const R_flap = Math.hypot(dZ0, dY0);
+      // Exact CAD Bore Circle Centers (0.000 mm tolerance):
+      // - BODY Servo Hole Center:      Zs_abs = 7.0000, Ys_up = 35.8950
+      // - BODY Wing Hinge Hole Center: Zh_dep = 0.0000, Yh_up = 21.2936
+      // - WING MOTOR ARM Bore Centers: Shaft=(3.8000, 15.2500), Tip=(3.8000, 2.2500) -> R_arm = 13.0000 mm
+      // - CONROD Bore Centers:         Hole1=(2.2000, 2.2000),  Hole2=(19.1100, 2.2000) -> L_rod = 16.9100 mm
+      // - WING FLAP Bore Centers:      Hinge=(14.4555, 20.0122), Horn=(2.0000, 16.2892) -> dZ0=12.4555, dY0=-3.7230, R_flap = 13.0000 mm
+      const R_arm = 13.0000, L_rod = 16.9100, Yh_up = 21.2936, Zh_dep = 0.0000;
+      const dZ0 = 12.4555, dY0 = -3.7230;
+      const R_flap = 13.0000;
       const phi0 = Math.atan2(dY0, dZ0);
-      const Zs_abs = 6.763, Ys_up = 35.962;
+      const Zs_abs = 7.0000, Ys_up = 35.8950;
 
-      // Servo 0 deg starts right at the BODY blocker (-64.85 deg world angle); 0..180 deg is completely unblocked on the open side!
-      const theta = (-64.85 + servoDeg) * Math.PI / 180.0;
+      // Servo 0 deg starts at the BODY blocker (-66.73 deg world angle); 53.3 deg is Flap 0.0 deg; 0..180 deg unblocked!
+      const theta = (-66.73 + servoDeg) * Math.PI / 180.0;
 
       const Az_abs = Zs_abs + R_arm * Math.cos(theta);
       const Ay_up  = Ys_up  + R_arm * Math.sin(theta);
@@ -398,34 +404,34 @@
       const phi = Math.atan2(Py_up - Yh_up, Pz_abs - Zh_dep);
       const flapRad = phi - phi0;
 
-      // Update Conrod Upper Pin (A) and Lower Pin (P)
+      // Place Upper Pin (A) and Lower Pin (P) at the EXACT circle centers of ARM tip hole, CONROD holes 1 & 2, and FLAP horn hole!
       pinUpper.position.set(side * 23.6, Ay_up, side * Az_abs);
-      pinLower.position.set(side * 26.2, Py_up, side * Pz_abs);
+      pinLower.position.set(side * 26.8, Py_up, side * Pz_abs);
 
-      // 1. Rotate WING MOTOR ARM around BODY Servo Hole Center (Zs_abs=7.000, Ys_up=35.962)
+      // 1. Rotate WING MOTOR ARM around its exact Shaft Bore Center (X=3.8000, Z=15.2500) -> (Zs_abs=7.0000, Ys_up=35.8950)
       const posArm = mArm.geometry.attributes.position;
       const srcArm = rawArmGeo.attributes.position;
       for (let i = 0; i < srcArm.count; i++) {
         const sx = srcArm.getX(i), sy = srcArm.getY(i), sz = srcArm.getZ(i);
-        const u_rad = -(sz - 15.250);
-        const w_lat = sx - 3.800;
-        const x_ax  = sy - 3.300;
+        const u_rad = -(sz - 15.2500);
+        const w_lat = sx - 3.8000;
+        const x_ax  = sy - 3.3000;
         const wx = side * (11.8 + x_ax);
         const wz = side * (Zs_abs + u_rad * Math.cos(theta) - w_lat * Math.sin(theta));
-        const wy = Ys_up + u_rad * Math.sin(theta) + w_lat * np_sin_fix(theta, w_lat);
-        posArm.setXYZ(i, wx, Ys_up + u_rad * Math.sin(theta) + w_lat * Math.cos(theta), wz);
+        const wy = Ys_up + u_rad * Math.sin(theta) + w_lat * Math.cos(theta);
+        posArm.setXYZ(i, wx, wy, wz);
       }
       posArm.needsUpdate = true;
       mArm.geometry.computeVertexNormals();
 
-      // 2. Transform CONROD strictly connecting Pin A to Pin P on the OUTER face of the Arm
+      // 2. Transform CONROD around its exact Bore Centers: Hole 1 (X=2.2000, Z=2.2000) at A, Hole 2 (X=19.1100, Z=2.2000) at P
       const rodAng = Math.atan2(Py_up - Ay_up, Pz_abs - Az_abs);
       const posRod = mRod.geometry.attributes.position;
       const srcRod = rawRodGeo.attributes.position;
       for (let i = 0; i < srcRod.count; i++) {
         const sx = srcRod.getX(i), sy = srcRod.getY(i), sz = srcRod.getZ(i);
-        const u_rod = sx - 1.916;
-        const w_rod = sz - 2.200;
+        const u_rod = sx - 2.2000;
+        const w_rod = sz - 2.2000;
         const t_rod = sy;
         const wx = side * (23.5 + t_rod);
         const wz = side * (Az_abs + u_rod * Math.cos(rodAng) - w_rod * Math.sin(rodAng));
@@ -435,15 +441,15 @@
       posRod.needsUpdate = true;
       mRod.geometry.computeVertexNormals();
 
-      // 3. Rotate WING FLAP strictly around BODY Wing Hinge Pin (Zh_dep=0.000, Yh_up=21.294), centered in slot |X|=27.30..114.90 mm
+      // 3. Rotate WING FLAP around its exact Hinge Bore Center (Z=14.4555, Y=20.0122) -> (Zh_dep=0.0000, Yh_up=21.2936)
       const cf = Math.cos(flapRad), sf = Math.sin(flapRad);
       const posFlap = mFlap.geometry.attributes.position;
       const srcFlap = rawFlapGeo.attributes.position;
       for (let i = 0; i < srcFlap.count; i++) {
         const sx = srcFlap.getX(i), sy = srcFlap.getY(i), sz = srcFlap.getZ(i);
-        const span = 87.600 - sx;
-        const dz_loc = 14.342 - sz;
-        const dy_loc = sy - 20.216;
+        const span = 87.6000 - sx;
+        const dz_loc = 14.4555 - sz;
+        const dy_loc = sy - 20.0122;
         const dz_rot = dz_loc * cf - dy_loc * sf;
         const dy_rot = dz_loc * sf + dy_loc * cf;
         const wx = side * (27.30 + span);
