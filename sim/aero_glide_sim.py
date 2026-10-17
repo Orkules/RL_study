@@ -283,8 +283,8 @@ class AeroGlideSimulator:
         elif self.mode == SIM_MODE_WIND_TUNNEL:
             ang_deg = np.array([0.0, 12.0, -8.0], dtype=np.float64)
         else:
-            # Free-drop starts slightly nose-down (-15 deg pitch) with forward launch speed
-            ang_deg = np.array([0.0, -15.0, 0.0], dtype=np.float64)
+            # Free-drop starts held upside-down by the tail with the nose pointing straight down (-90 deg pitch)
+            ang_deg = np.array([0.0, -90.0, 0.0], dtype=np.float64)
 
         self.angles = np.deg2rad(ang_deg)
         self.R_wb = euler_to_rotation_matrix(self.angles[0], self.angles[1], self.angles[2])
@@ -303,7 +303,8 @@ class AeroGlideSimulator:
             if initial_velocity_ned_ms is not None:
                 self.vel_ned = np.asarray(initial_velocity_ned_ms, dtype=np.float64).copy()
             else:
-                self.vel_ned = np.array([12.0, 0.0, 2.0], dtype=np.float64)
+                # Released from rest (0 m/s) in the air with nose pointing straight down
+                self.vel_ned = np.array([0.0, 0.0, 0.1], dtype=np.float64)
 
         self.step_count = 0
         self.time_s = 0.0

@@ -312,6 +312,12 @@
           <span><i class="dot" style="background:#a855f7"></i>Velocity Vector</span>
         </div>
       </div>
+
+      <!-- Bottom-Left 3-Arrow X, Y, Z Coordinate Axis Gizmo -->
+      <div id="axes-gizmo-box" style="position:absolute;bottom:16px;left:16px;background:rgba(15,23,42,0.88);border:1px solid #334155;border-radius:10px;padding:6px 10px;pointer-events:none;backdrop-filter:blur(6px);display:flex;flex-direction:column;align-items:center;">
+        <div style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px;">World Axes (X · Y · Z)</div>
+        <canvas id="axes-canvas" width="115" height="115" style="display:block;"></canvas>
+      </div>
     </div>
 
     <aside class="sidebar">
@@ -925,11 +931,11 @@
         simState.r = Math.max(-35, Math.min(35, simState.r + dr * subDt));
 
         const cr = Math.cos(simState.roll), sr = Math.sin(simState.roll);
-        const cp = Math.max(0.15, Math.abs(Math.cos(simState.pitch))) * Math.sign(Math.cos(simState.pitch) || 1);
+        const cp = Math.max(0.08, Math.abs(Math.cos(simState.pitch))) * Math.sign(Math.cos(simState.pitch) || 1);
         const tp = Math.sin(simState.pitch) / cp;
 
         simState.roll  += (simState.p + (simState.q * sr + simState.r * cr) * tp) * subDt;
-        simState.pitch = Math.max(-1.48, Math.min(1.48, simState.pitch + (simState.q * cr - simState.r * sr) * subDt));
+        simState.pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, simState.pitch + (simState.q * cr - simState.r * sr) * subDt));
         simState.yaw   += ((simState.q * sr + simState.r * cr) / cp) * subDt;
 
         if (simState.mode === "free_drop") {
@@ -1040,16 +1046,17 @@
         simState.p = simState.q = simState.r = 0.0;
         simState.posN = simState.posE = simState.altM = 0.0;
       } else {
+        // Free-Drop starts held upside-down in the air with the nose pointing straight down (-90 deg pitch) and 0 speed
         simState.roll = 0.0;
-        simState.pitch = -15.0 * Math.PI / 180.0;
+        simState.pitch = -90.0 * Math.PI / 180.0;
         simState.yaw = 0.0;
         simState.p = simState.q = simState.r = 0.0;
         simState.posN = 0.0;
         simState.posE = 0.0;
         simState.altM = simState.dropAltitudeInit;
-        simState.velN = 14.0;
+        simState.velN = 0.0;
         simState.velE = 0.0;
-        simState.velD = 2.0;
+        simState.velD = 0.1;
       }
       sendWs({ type: "set_mode", mode: newMode, altitude_m: simState.dropAltitudeInit, airspeed_ms: simState.tunnelAirspeed });
     }
@@ -1306,6 +1313,71 @@
 
       controls.update();
       renderer.render(scene, camera);
+      drawAxesGizmo();
+    }
+
+    // 3-Arrow X, Y, Z Coordinate Axis Gizmo Renderer (Bottom-Left)
+    const axesCanvas = document.getElementById("axes-canvas");
+    const axesCtx = axesCanvas.getContext("2d");
+
+    function drawAxesGizmo() {
+      const W = axesCanvas.width, H = axesCanvas.height;
+      const cx = W / 2, cy = H / 2;
+      const len = 38;
+      axesCtx.clearRect(0, 0, W, H);
+
+      // Compute camera inverse rotation matrix so world axes rotate live with camera view
+      const qInv = camera.quaternion.clone().invert();
+      const axes = [
+        { label: "X", dir: new THREE.Vector3(1, 0, 0), color: "#ef4444" }, // Red: X (Forward / North)
+        { label: "Y", dir: new THREE.Vector3(0, 0, 1), color: "#22c55e" }, // Green: Y (Right / Span)
+        { label: "Z", dir: new THREE.Vector3(0, 1, 0), color: "#38bdf8" }  // Blue: Z (Up / Altitude)
+      ];
+
+      // Sort back-to-front by camera-space Z for clean depth order
+      const projected = axes.map((a) => {
+        const v = a.dir.clone().applyQuaternion(qInv);
+        return { ...a, vx: v.x, vy: -v.y, vz: v.z };
+      }).sort((a, b) => a.vz - b.vz);
+
+      // Center origin hub
+      axesCtx.fillStyle = "#64748b";
+      axesCtx.beginPath();
+      axesCtx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+      axesCtx.fill();
+
+      for (const a of projected) {
+        const ex = cx + a.vx * len;
+        const ey = cy + a.vy * len;
+
+        // Shaft
+        axesCtx.strokeStyle = a.color;
+        axesCtx.lineWidth = 3.0;
+        axesCtx.beginPath();
+        axesCtx.moveTo(cx, cy);
+        axesCtx.lineTo(ex, ey);
+        axesCtx.stroke();
+
+        // Arrowhead cone
+        const ang = Math.atan2(ey - cy, ex - cx);
+        const headLen = 8.5;
+        axesCtx.fillStyle = a.color;
+        axesCtx.beginPath();
+        axesCtx.moveTo(ex, ey);
+        axesCtx.lineTo(ex - headLen * Math.cos(ang - 0.42), ey - headLen * Math.sin(ang - 0.42));
+        axesCtx.lineTo(ex - headLen * Math.cos(ang + 0.42), ey - headLen * Math.sin(ang + 0.42));
+        axesCtx.closePath();
+        axesCtx.fill();
+
+        // Axis label pill (X, Y, Z)
+        const lx = cx + a.vx * (len + 12);
+        const ly = cy + a.vy * (len + 12);
+        axesCtx.font = "bold 12px sans-serif";
+        axesCtx.textAlign = "center";
+        axesCtx.textBaseline = "middle";
+        axesCtx.fillStyle = a.color;
+        axesCtx.fillText(a.label, lx, ly);
+      }
     }
     animate();
   </script>
