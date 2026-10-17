@@ -6,15 +6,15 @@ from sim.glide_rl_env import GlidePulloutEnv
 
 
 def test_glide_rl_env_spaces_and_step():
-    env = GlidePulloutEnv(release_altitude_m=500.0, randomize_drop=False)
+    env = GlidePulloutEnv(release_altitude_m=1000.0, randomize_drop=False)
     obs, info = env.reset(seed=42, options={"deterministic": True})
     assert obs.shape == (10,)
     assert env.action_space.shape == (2,)
-    assert info["altitude_m"] == 500.0
+    assert info["altitude_m"] == 1000.0
     assert info["pitch_deg"] < -85.0
 
 
-def test_trained_glide_rl_policy_pulls_up_and_glides_over_500m():
+def test_trained_glide_rl_policy_pulls_up_and_glides_from_1000m():
     ckpt_untrained = Path("checkpoints/glide_rl/stage_0_untrained.pt")
     ckpt_trained = Path("checkpoints/glide_rl/stage_4_master.pt")
     assert ckpt_untrained.exists() and ckpt_trained.exists()
@@ -25,7 +25,7 @@ def test_trained_glide_rl_policy_pulls_up_and_glides_over_500m():
         model.load_state_dict(ckpt["model_state_dict"])
         model.eval()
 
-        env = GlidePulloutEnv(release_altitude_m=500.0, randomize_drop=False)
+        env = GlidePulloutEnv(release_altitude_m=1000.0, randomize_drop=False)
         obs, info = env.reset(seed=100, options={"deterministic": True})
         max_pitch = info["pitch_deg"]
         while True:
@@ -40,6 +40,6 @@ def test_trained_glide_rl_policy_pulls_up_and_glides_over_500m():
     dist_0, pitch_0 = run_policy(ckpt_untrained)
     dist_4, pitch_4 = run_policy(ckpt_trained)
 
-    assert dist_0 < 15.0
-    assert dist_4 > 500.0
-    assert pitch_4 > -26.0
+    assert dist_0 < 25.0
+    assert dist_4 > 800.0
+    assert pitch_4 > -35.0

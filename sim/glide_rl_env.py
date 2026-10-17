@@ -54,7 +54,7 @@ class GlidePulloutEnv(gym.Env):
 
     def __init__(
         self,
-        release_altitude_m: float = 500.0,
+        release_altitude_m: float = 1000.0,
         control_dt: float = 0.05,          # 20 Hz RL policy rate (5x 10ms physics steps per RL step)
         max_wing_flap_deg: float = MAX_WING_FLAP_DEG,
         randomize_drop: bool = True,
@@ -85,8 +85,9 @@ class GlidePulloutEnv(gym.Env):
         self.delta_l_deg = 0.0
         self.last_action = np.zeros(2, dtype=np.float32)
         self.step_count = 0
-        self.max_steps = 600  # up to 30 seconds of glide flight
+        self.max_steps = 1600  # up to 80 seconds so a 1,000 m max-range glide (~53 s) always reaches ground
         self.prev_xy_dist = 0.0
+        self.prev_alt_m = self.release_altitude_m
 
     def _get_obs(self) -> np.ndarray:
         roll, pitch, _ = self.angles
@@ -139,6 +140,7 @@ class GlidePulloutEnv(gym.Env):
         self.last_action = np.zeros(2, dtype=np.float32)
         self.step_count = 0
         self.prev_xy_dist = 0.0
+        self.prev_alt_m = alt
 
         return self._get_obs(), self.get_info()
 
@@ -270,41 +272,35 @@ class GlidePulloutEnv(gym.Env):
         delta_xy = cur_xy_dist - self.prev_xy_dist
         self.prev_xy_dist = cur_xy_dist
 
-        # --- Reward Function ---
-        # 1. Reach as far as possible on the X-Y surface (direct reward for every meter of horizontal distance gained!)
-        xy_distance_reward = 2.5 * delta_xy
+        cur_alt_m = max(0.0, float(-self.pos_ned[2]))
+        delta_alt = max(0.0, self.prev_alt_m - cur_alt_m)
+        self.prev_alt_m = cur_alt_m
 
-        # 2. Pitch pull-up / airplane-leveling reward:
-        #    Starts at pitch = -90 deg (-pi/2). As it pulls up toward level flight (pitch in [-28 deg, +15 deg]),
-        #    it gets a strong continuous reward for flying straight like an airplane instead of diving straight down!
-        pitch_deg = float(np.rad2deg(pitch))
-        # Peaks around optimal glide/level pitch (-22 deg to 0 deg) and rewards pulling out of the -90 deg dive
-        pullup_progress = float((pitch + np.pi / 2.0) / (np.pi / 2.0))  # 0.0 at -90 deg dive, 1.0 at 0 deg level
-        airplane_pitch_bonus = 0.8 * np.clip(pullup_progress, 0.0, 1.2) + 0.6 * float(
-            np.exp(-((pitch_deg - (-22.0)) ** 2) / (2.0 * (18.0 ** 2)))
-        )
+        # --- Reward Function (Pure Horizontal X-Y Distance — Zero Pitch Reward!) ---
+        # Reward ONLY horizontal X-Y distance progress + keeping wings level (no artificial pitch target)
+        xy_distance_reward = 5.0 * delta_xy
 
-        # 3. Wings-level & smooth control penalty (keep roll ~ 0 deg so all lift goes into pulling up and gliding far)
-        roll_penalty = 0.8 * float(1.0 - np.cos(roll)) + 0.15 * float(act[1] ** 2)
-        rate_penalty = 0.015 * float(p ** 2 + q ** 2 + r ** 2)
-        slew_penalty = 0.05 * float(np.sum((act - self.last_action) ** 2))
+        # Penalize roll tilt away from wings-level (roll = 0 deg -> 1 - cos(roll) = 0, inverted 180 deg -> 2.0)
+        roll_penalty = 1.2 * float(1.0 - np.cos(roll)) + 0.15 * float(act[1] ** 2)
+        rate_penalty = 0.008 * float(p ** 2 + q ** 2 + r ** 2)
+        slew_penalty = 0.02 * float(np.sum((act - self.last_action) ** 2))
 
         reward = (
             xy_distance_reward
-            + airplane_pitch_bonus
             - roll_penalty
             - rate_penalty
             - slew_penalty
         )
 
         hit_ground = bool(-self.pos_ned[2] <= 0.0)
-        tumbled = bool(abs(roll) > np.deg2rad(110.0))
+        # Only check roll tumble once pitch has pulled up past -80 deg (away from -90 deg Euler gimbal singularity)
+        tumbled = bool(pitch > np.deg2rad(-80.0) and abs(roll) > np.deg2rad(100.0))
         terminated = hit_ground or tumbled
         if tumbled:
-            reward -= 15.0
+            reward -= 20.0
         elif hit_ground:
-            # Terminal bonus proportional to total X-Y distance reached on the ground!
-            reward += 0.15 * cur_xy_dist
+            # Terminal bonus for total horizontal X-Y distance reached on the ground
+            reward += 1.0 * cur_xy_dist
 
         truncated = bool(self.step_count >= self.max_steps)
         self.last_action = act.copy()
