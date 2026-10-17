@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Step 1: 20cm Tethered TVC Rocket-Drone — RL Simulation Studio</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --panel: #111827;
+      --panel-border: #1f2937;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --accent: #38bdf8;
+      --emerald: #10b981;
+      --amber: #f59e0b;
+      --rose: #f43f5e;
+      --indigo: #818cf8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      overflow: hidden;
+    }
+    header {
+      background: #0f172a;
+      border-bottom: 1px solid var(--panel-border);
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .badge {
+      background: rgba(56, 189, 248, 0.14);
+      color: var(--accent);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 4px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .brand h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .stage-bar {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .stage-btn {
+      background: #1e293b;
+      color: var(--muted);
+      border: 1px solid #334155;
+      padding: 6px 11px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .stage-btn:hover {
+      color: var(--text);
+      border-color: var(--accent);
+    }
+    .stage-btn.active {
+      background: rgba(56, 189, 248, 0.18);
+      color: #fff;
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    main {
+      display: grid;
+      grid-template-columns: 1fr 410px;
+      height: 100%;
+      overflow: hidden;
+    }
+    #viewport-container {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      background: #070a10;
+    }
+    #canvas3d {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .hud-overlay {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: none;
+    }
+    .hud-card {
+      background: rgba(15, 23, 42, 0.86);
+      border: 1px solid rgba(51, 65, 85, 0.85);
+      border-radius: 8px;
+      padding: 10px 14px;
+      backdrop-filter: blur(6px);
+      pointer-events: auto;
+      max-width: 350px;
+    }
+    .hud-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+    .hud-stage-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 4px;
+    }
+    .hud-desc {
+      font-size: 12px;
+      color: #cbd5e1;
+      line-height: 1.4;
+    }
+    .controls-bar {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      right: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      pointer-events: none;
+      flex-wrap: wrap;
+    }
+    .btn-group {
+      display: flex;
+      gap: 8px;
+      pointer-events: auto;
+      background: rgba(15, 23, 42, 0.9);
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      flex-wrap: wrap;
+    }
+    .action-btn {
+      background: #1e293b;
+      color: var(--text);
+      border: 1px solid #475569;
+      padding: 6px 11px;
+      border-radius: 5px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .action-btn:hover {
+      background: #334155;
+      border-color: var(--accent);
+    }
+    .action-btn.warn:hover {
+      border-color: var(--amber);
+      color: var(--amber);
+    }
+    .sidebar {
+      background: var(--panel);
+      border-left: 1px solid var(--panel-border);
+      padding: 14px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .panel-box {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .panel-header h2 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .kpi {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 6px;
+      padding: 8px;
+    }
+    .kpi-label {
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .kpi-val {
+      font-size: 16px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      margin-top: 2px;
+    }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 92px 1fr 58px;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 7px;
+      font-size: 12px;
+    }
+    .bar-track {
+      height: 8px;
+      background: #1e293b;
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+    .bar-fill {
+      height: 100%;
+      background: var(--accent);
+      transition: width 0.05s linear;
+    }
+    .wire-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+    .wire-pill {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 5px;
+      padding: 6px;
+      text-align: center;
+      font-size: 11px;
+    }
+    .wire-pill strong {
+      display: block;
+      font-size: 13px;
+      margin-top: 2px;
+      font-variant-numeric: tabular-nums;
+    }
+    canvas.plot {
+      width: 100%;
+      height: 110px;
+      background: #090d16;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      display: block;
+    }
+    .manual-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .slider-line {
+      display: grid;
+      grid-template-columns: 95px 1fr 48px;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+    .legend-row {
+      display: flex;
+      gap: 12px;
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 5px;
+    }
+    .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 4px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="badge">Step 1 · Tethered Test Rig</span>
+      <h1>20cm Single-Propeller TVC Rocket-Drone (4 Wires · 2 Servos · Anti-Spin Fins)</h1>
+    </div>
+    <div class="stage-bar" id="stage-buttons">
+      <button class="stage-btn" data-stage="stage_0_random">0. Untrained (Random)</button>
+      <button class="stage-btn" data-stage="stage_1_early">1. Early (Update 25)</button>
+      <button class="stage-btn" data-stage="stage_2_mid">2. Mid (Update 30)</button>
+      <button class="stage-btn" data-stage="stage_3_late">3. Late (Update 38)</button>
+      <button class="stage-btn active" data-stage="stage_4_stabilized">4. Stabilized (Converged)</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="viewport-container">
+      <canvas id="canvas3d"></canvas>
+
+      <div class="hud-overlay">
+        <div class="hud-card">
+          <div class="hud-title">Active RL Checkpoint</div>
+          <div class="hud-stage-name" id="hud-stage-title">Stage 4: Converged (Locked Upright Stabilization)</div>
+          <div class="hud-desc" id="hud-stage-desc">
+            20cm cylinder suspended at h=0.45m by 4 corner wires. Bottom propeller + 2-axis servo gimbal stabilizes attitude from 6D IMU input while passive fins reject spin in the slipstream.
+          </div>
+        </div>
+      </div>
+
+      <div class="controls-bar">
+        <div class="btn-group">
+          <button class="action-btn" id="btn-reset-std">Reset Tilted (22°, -18°)</button>
+          <button class="action-btn" id="btn-reset-rand">Reset Random Tilt</button>
+          <button class="action-btn warn" id="btn-kick-roll">Push Roll (+Impulse)</button>
+          <button class="action-btn warn" id="btn-kick-pitch">Push Pitch (-Impulse)</button>
+          <button class="action-btn warn" id="btn-kick-yaw">Twist Yaw (+Spin)</button>
+          <button class="action-btn" id="btn-pause">Pause / Resume</button>
+        </div>
+        <div class="btn-group">
+          <button class="action-btn" id="btn-cam-iso">3D Rig View</button>
+          <button class="action-btn" id="btn-cam-gimbal">Zoom Bottom Gimbal & Fins</button>
+          <button class="action-btn" id="btn-cam-top">Top Wire View</button>
+        </div>
+      </div>
+    </div>
+
+    <aside class="sidebar">
+      <!-- IMU Input Panel -->
+      <div class="panel-box">
+        <div class="panel-header">
+          <h2>IMU Sensor Input (Gyroscope + Attitude)</h2>
+          <span id="status-pill" style="font-size:11px;color:var(--emerald);font-weight:600;">● LIVE 100Hz</span>
+        </div>
+        <div class="kpi-grid">
+          <div class="kpi">
+            <div class="kpi-label">Roll Angle</div>
+            <div class="kpi-val" id="val-roll">0.0°</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Pitch Angle</div>
+            <div class="kpi-val" id="val-pitch">0.0°</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Total Tilt</div>
+            <div class="kpi-val" id="val-tilt" style="color:var(--emerald)">0.0°</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Gyro ωx</div>
+            <div class="kpi-val" id="val-gx">0.00</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Gyro ωy</div>
+            <div class="kpi-val" id="val-gy">0.00</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Yaw Spin ωz</div>
+            <div class="kpi-val" id="val-gz">0.00</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Neural Network 3 Outputs -->
+      <div class="panel-box">
+        <div class="panel-header">
+          <h2>Neural Network Outputs (3 Actuators)</h2>
+          <span style="font-size:11px;color:var(--accent)" id="val-airflow">Slipstream: 12.1 m/s</span>
+        </div>
+        <div class="bar-row">
+          <span>Servo 1 (Pitch)</span>
+          <div class="bar-track"><div class="bar-fill" id="bar-s1" style="width:50%"></div></div>
+          <span id="val-s1" style="text-align:right;font-variant-numeric:tabular-nums">0.0°</span>
+        </div>
+        <div class="bar-row">
+          <span>Servo 2 (Roll)</span>
+          <div class="bar-track"><div class="bar-fill" id="bar-s2" style="width:50%;background:var(--indigo)"></div></div>
+          <span id="val-s2" style="text-align:right;font-variant-numeric:tabular-nums">0.0°</span>
+        </div>
+        <div class="bar-row">
+          <span>Motor Speed</span>
+          <div class="bar-track"><div class="bar-fill" id="bar-motor" style="width:57%;background:var(--emerald)"></div></div>
+          <span id="val-motor" style="text-align:right;font-variant-numeric:tabular-nums">57%</span>
+        </div>
+
+        <div style="margin-top:10px;">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:5px;">4-Wire Suspension Tensions (Newtons)</div>
+          <div class="wire-grid">
+            <div class="wire-pill">Wire NE<strong id="w-0">0.5 N</strong></div>
+            <div class="wire-pill">Wire NW<strong id="w-1">0.5 N</strong></div>
+            <div class="wire-pill">Wire SW<strong id="w-2">0.5 N</strong></div>
+            <div class="wire-pill">Wire SE<strong id="w-3">0.5 N</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Real-Time Attitude Oscilloscope -->
+      <div class="panel-box">
+        <div class="panel-header">
+          <h2>Live Attitude & Gimbal Trace</h2>
+          <span style="font-size:11px;color:var(--muted)" id="val-simtime">t = 0.00s</span>
+        </div>
+        <canvas id="trace-canvas" class="plot" width="360" height="110"></canvas>
+        <div class="legend-row">
+          <span><i class="dot" style="background:#38bdf8"></i>Roll (°)</span>
+          <span><i class="dot" style="background:#f43f5e"></i>Pitch (°)</span>
+          <span><i class="dot" style="background:#10b981"></i>Servo 1 (°)</span>
+        </div>
+      </div>
+
+      <!-- RL Learning Curve -->
+      <div class="panel-box">
+        <div class="panel-header">
+          <h2>RL Training Progress (Random → Stabilized)</h2>
+          <span style="font-size:11px;color:var(--emerald)">0.87° Final Tilt</span>
+        </div>
+        <canvas id="curve-canvas" class="plot" width="360" height="110"></canvas>
+        <div class="legend-row">
+          <span><i class="dot" style="background:#10b981"></i>Episode Return</span>
+          <span><i class="dot" style="background:#f59e0b"></i>Final Tilt (°)</span>
+        </div>
+      </div>
+
+      <!-- Optional Manual Override -->
+      <div class="panel-box">
+        <div class="panel-header">
+          <h2>Manual Servo / Motor Override</h2>
+          <label style="font-size:12px;cursor:pointer;">
+            <input type="checkbox" id="chk-manual" /> Enable Manual
+          </label>
+        </div>
+        <div class="manual-row">
+          <div class="slider-line">
+            <span>Servo 1 Pitch</span>
+            <input type="range" id="sl-s1" min="-1" max="1" step="0.02" value="0" />
+            <span id="lbl-s1">0.00</span>
+          </div>
+          <div class="slider-line">
+            <span>Servo 2 Roll</span>
+            <input type="range" id="sl-s2" min="-1" max="1" step="0.02" value="0" />
+            <span id="lbl-s2">0.00</span>
+          </div>
+          <div class="slider-line">
+            <span>Motor Speed</span>
+            <input type="range" id="sl-m" min="-1" max="1" step="0.02" value="0.14" />
+            <span id="lbl-m">57%</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const STAGE_DESCRIPTIONS = {
+      stage_0_random: {
+        title: "Stage 0: Untrained (Random Network · Update 0)",
+        desc: "Random initial weights. The drone immediately tips over to ~40° and hangs caught by the 4 suspension wires so it cannot touch the floor."
+      },
+      stage_1_early: {
+        title: "Stage 1: Early Learning (Update 25 · Return +281)",
+        desc: "The network discovers that throttling up the bottom propeller and tilting the 2 servos produces restoring torque, fighting gravity for ~2.5s."
+      },
+      stage_2_mid: {
+        title: "Stage 2: Mid Training (Update 30 · Return +750)",
+        desc: "Stays off the safety wires for the full episode! Balances upright with a noticeable ~11° oscillation as it refines gyro feedback."
+      },
+      stage_3_late: {
+        title: "Stage 3: Late Training (Update 38 · Return +1222)",
+        desc: "Uses gyroscope angular velocity (ωx, ωy, ωz) to damp swings down to ~3.2° while high slipstream over the fins rejects body spin."
+      },
+      stage_4_stabilized: {
+        title: "Stage 4: Converged (Update 85 · Return +1317 · 0.87° Tilt)",
+        desc: "Locked upright stabilization (< 1° tilt). Try clicking 'Push Roll' or 'Push Pitch' below to watch the 2-axis gimbal reject disturbances in real time!"
+      }
+    };
+
+    // --- Three.js 3D Scene Setup (Z-up in physics mapped to Y-up in Three.js) ---
+    // Coordinate helper: Physics (x, y, z) -> Three.js (x, z, -y)
+    function p2t(x, y, z) {
+      return new THREE.Vector3(x, z, -y);
+    }
+
+    const container = document.getElementById("viewport-container");
+    const canvas3d = document.getElementById("canvas3d");
+    const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = true;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x070a10);
+
+    const camera = new THREE.PerspectiveCamera(42, 1, 0.05, 25);
+    camera.position.set(0.95, 0.72, 1.05);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 0.45, 0);
+    controls.enableDamping = true;
+    controls.update();
+
+    // Lighting
+    scene.add(new THREE.AmbientLight(0xdbeafe, 0.55));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.95);
+    dirLight.position.set(1.5, 2.5, 1.5);
+    scene.add(dirLight);
+    const pointLight = new THREE.PointLight(0x38bdf8, 0.6, 4);
+    pointLight.position.set(-0.8, 0.9, 0.8);
+    scene.add(pointLight);
+
+    // Floor Grid (z = 0 in physics -> y = 0 in Three.js)
+    const grid = new THREE.GridHelper(2.0, 20, 0x334155, 0x1e293b);
+    scene.add(grid);
+
+    // Build Test Rig Frame (4 corner pillars & top square frame at z = 0.82, w = 0.42)
+    const rigGroup = new THREE.Group();
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.6, roughness: 0.35 });
+    const w = 0.42, zt = 0.82;
+    const corners = [[w, w], [-w, w], [-w, -w], [w, -w]];
+    corners.forEach(([cx, cy]) => {
+      const pillarGeo = new THREE.CylinderGeometry(0.008, 0.008, zt, 12);
+      const pillar = new THREE.Mesh(pillarGeo, frameMat);
+      pillar.position.set(cx, zt / 2, -cy);
+      rigGroup.add(pillar);
+
+      // Anchor joint sphere at top corner
+      const anchorGeo = new THREE.SphereGeometry(0.015, 16, 16);
+      const anchorMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0284c7, emissiveIntensity: 0.35 });
+      const anchor = new THREE.Mesh(anchorGeo, anchorMat);
+      anchor.position.set(cx, zt, -cy);
+      rigGroup.add(anchor);
+    });
+
+    // Top crossbars
+    for (let i = 0; i < 4; i++) {
+      const [x1, y1] = corners[i];
+      const [x2, y2] = corners[(i + 1) % 4];
+      const p1 = p2t(x1, y1, zt);
+      const p2 = p2t(x2, y2, zt);
+      const len = p1.distanceTo(p2);
+      const barGeo = new THREE.CylinderGeometry(0.007, 0.007, len, 12);
+      const bar = new THREE.Mesh(barGeo, frameMat);
+      bar.position.copy(p1).add(p2).multiplyScalar(0.5);
+      bar.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), p2.clone().sub(p1).normalize());
+      rigGroup.add(bar);
+    }
+    scene.add(rigGroup);
+
+    // --- Build 20cm Rocket-Drone Group ---
+    const dronePivot = new THREE.Group();
+    dronePivot.position.set(0, 0.45, 0); // Suspended at h = 0.45m off the ground
+    scene.add(dronePivot);
+
+    // Main 20cm vertical cylindrical fuselage (radius = 0.025m, length = 0.20m)
+    const bodyGeo = new THREE.CylinderGeometry(0.024, 0.026, 0.20, 32);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.45, roughness: 0.3 });
+    const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+    dronePivot.add(bodyMesh);
+
+    // Nose cone at top (+0.10m to +0.135m)
+    const noseGeo = new THREE.ConeGeometry(0.024, 0.04, 32);
+    const noseMat = new THREE.MeshStandardMaterial({ color: 0x0ea5e9, metalness: 0.3, roughness: 0.4 });
+    const noseMesh = new THREE.Mesh(noseGeo, noseMat);
+    noseMesh.position.set(0, 0.12, 0);
+    dronePivot.add(noseMesh);
+
+    // IMU sensor stripe near middle
+    const imuRingGeo = new THREE.CylinderGeometry(0.0265, 0.0265, 0.016, 32);
+    const imuRingMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, emissive: 0x38bdf8, emissiveIntensity: 0.2 });
+    const imuRing = new THREE.Mesh(imuRingGeo, imuRingMat);
+    imuRing.position.set(0, 0.02, 0);
+    dronePivot.add(imuRing);
+
+    // Tether attachment collar ring at z_body = -0.022m
+    const collarGeo = new THREE.TorusGeometry(0.030, 0.0035, 12, 32);
+    const collarMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.7, roughness: 0.2 });
+    const collarMesh = new THREE.Mesh(collarGeo, collarMat);
+    collarMesh.rotation.x = Math.PI / 2;
+    collarMesh.position.set(0, -0.022, 0);
+    dronePivot.add(collarMesh);
+
+    // 4 Anti-Spin Aerodynamic Fins at the bottom of the 20cm fuselage
+    const finGeo = new THREE.BoxGeometry(0.003, 0.048, 0.032);
+    const finMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.5, roughness: 0.4 });
+    for (let i = 0; i < 4; i++) {
+      const fin = new THREE.Mesh(finGeo, finMat);
+      const ang = (i * Math.PI) / 2;
+      const rFin = 0.036;
+      fin.position.set(Math.cos(ang) * rFin, -0.078, Math.sin(ang) * rFin);
+      // Slight cambered angle so high-speed prop-wash rejects single-propeller spin
+      fin.rotation.y = -ang + Math.PI / 2;
+      fin.rotation.z = 0.12;
+      dronePivot.add(fin);
+    }
+
+    // Bottom 2-Axis Servo Gimbal + Propeller Assembly at y = -0.10m
+    const gimbalMount = new THREE.Group();
+    gimbalMount.position.set(0, -0.105, 0);
+    dronePivot.add(gimbalMount);
+
+    // Servo ring housing
+    const servoHousingGeo = new THREE.CylinderGeometry(0.014, 0.018, 0.022, 20);
+    const servoHousingMat = new THREE.MeshStandardMaterial({ color: 0xf43f5e, metalness: 0.6, roughness: 0.3 });
+    const servoHousing = new THREE.Mesh(servoHousingGeo, servoHousingMat);
+    gimbalMount.add(servoHousing);
+
+    // Spinning Propeller Blades
+    const propGroup = new THREE.Group();
+    propGroup.position.set(0, -0.012, 0);
+    gimbalMount.add(propGroup);
+
+    const bladeGeo = new THREE.BoxGeometry(0.095, 0.0025, 0.012);
+    const bladeMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0284c7, emissiveIntensity: 0.4 });
+    const blade1 = new THREE.Mesh(bladeGeo, bladeMat);
+    const blade2 = new THREE.Mesh(bladeGeo, bladeMat);
+    blade2.rotation.y = Math.PI / 2;
+    propGroup.add(blade1);
+    propGroup.add(blade2);
+
+    // Thrust Vector Plume Cone (points downward from gimbaled motor)
+    const plumeGeo = new THREE.ConeGeometry(0.022, 0.14, 24, 1, true);
+    const plumeMat = new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.42,
+      side: THREE.DoubleSide
+    });
+    const plumeMesh = new THREE.Mesh(plumeGeo, plumeMat);
+    plumeMesh.position.set(0, -0.08, 0);
+    gimbalMount.add(plumeMesh);
+
+    // 4 Suspension Wires (dynamic cylinders/lines connecting rig anchors to collar lugs)
+    const wireMeshes = [];
+    for (let i = 0; i < 4; i++) {
+      const wGeo = new THREE.CylinderGeometry(0.0022, 0.0022, 1.0, 8);
+      const wMat = new THREE.MeshBasicMaterial({ color: 0x10b981 });
+      const wMesh = new THREE.Mesh(wGeo, wMat);
+      scene.add(wMesh);
+      wireMeshes.push(wMesh);
+    }
+
+    function updateWireMesh(mesh, pA, pB, tension) {
+      const dir = pB.clone().sub(pA);
+      const len = dir.length();
+      mesh.scale.set(1, len, 1);
+      mesh.position.copy(pA).add(pB).multiplyScalar(0.5);
+      mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+      // Color shifts from emerald -> amber -> rose as wire tension increases
+      if (tension > 1.8) {
+        mesh.material.color.setHex(0xf43f5e);
+      } else if (tension > 0.9) {
+        mesh.material.color.setHex(0xf59e0b);
+      } else {
+        mesh.material.color.setHex(0x10b981);
+      }
+    }
+
+    // --- Oscilloscope & Learning Curve Plots ---
+    const traceHistory = [];
+    const MAX_TRACE = 180;
+    const traceCanvas = document.getElementById("trace-canvas");
+    const traceCtx = traceCanvas.getContext("2d");
+
+    function drawTrace() {
+      const W = traceCanvas.width, H = traceCanvas.height;
+      traceCtx.clearRect(0, 0, W, H);
+      // Zero line
+      traceCtx.strokeStyle = "#1e293b";
+      traceCtx.beginPath();
+      traceCtx.moveTo(0, H / 2);
+      traceCtx.lineTo(W, H / 2);
+      traceCtx.stroke();
+
+      if (traceHistory.length < 2) return;
+
+      const series = [
+        { key: "roll", color: "#38bdf8", scale: 45 },
+        { key: "pitch", color: "#f43f5e", scale: 45 },
+        { key: "s1", color: "#10b981", scale: 25 }
+      ];
+
+      series.forEach(({ key, color, scale }) => {
+        traceCtx.strokeStyle = color;
+        traceCtx.lineWidth = 1.6;
+        traceCtx.beginPath();
+        traceHistory.forEach((pt, idx) => {
+          const x = (idx / (MAX_TRACE - 1)) * W;
+          const y = H / 2 - (pt[key] / scale) * (H * 0.44);
+          if (idx === 0) traceCtx.moveTo(x, y);
+          else traceCtx.lineTo(x, y);
+        });
+        traceCtx.stroke();
+      });
+    }
+
+    async function loadLearningCurve() {
+      try {
+        const res = await fetch("/api/training-progress");
+        const data = await res.json();
+        const curve = data.learning_curve || [];
+        const canvas = document.getElementById("curve-canvas");
+        const ctx = canvas.getContext("2d");
+        const W = canvas.width, H = canvas.height;
+        ctx.clearRect(0, 0, W, H);
+        if (curve.length < 2) return;
+
+        // Plot Return (-350 to 1350)
+        ctx.strokeStyle = "#10b981";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        curve.forEach((pt, idx) => {
+          const x = (idx / (curve.length - 1)) * (W - 16) + 8;
+          const norm = (pt.mean_return + 350) / 1750;
+          const y = H - 10 - Math.max(0, Math.min(1, norm)) * (H - 20);
+          if (idx === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        // Plot Final Tilt (0 to 45 deg)
+        ctx.strokeStyle = "#f59e0b";
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        curve.forEach((pt, idx) => {
+          const x = (idx / (curve.length - 1)) * (W - 16) + 8;
+          const norm = pt.mean_final_tilt_deg / 45.0;
+          const y = H - 10 - Math.max(0, Math.min(1, norm)) * (H - 20);
+          if (idx === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    loadLearningCurve();
+
+    // --- WebSocket Connection to Live Python Physics + PyTorch Checkpoints ---
+    let ws = null;
+    let currentMotorSpeed = 0.57;
+
+    function connectWS() {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${proto}//${location.host}/ws/sim`);
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        const t = data.telemetry;
+
+        // Update 3D Drone Attitude
+        const rollRad = THREE.MathUtils.degToRad(t.roll_deg);
+        const pitchRad = THREE.MathUtils.degToRad(t.pitch_deg);
+        const yawRad = THREE.MathUtils.degToRad(t.yaw_deg);
+        // Physics ZYX Euler -> Three.js YXZ
+        const euler = new THREE.Euler(rollRad, yawRad, -pitchRad, "YXZ");
+        dronePivot.quaternion.setFromEuler(euler);
+
+        // Update Bottom 2-Axis Servo Gimbal + Plume
+        const s1Rad = THREE.MathUtils.degToRad(t.servo_1_deg);
+        const s2Rad = THREE.MathUtils.degToRad(t.servo_2_deg);
+        gimbalMount.rotation.set(s2Rad, 0, s1Rad);
+
+        currentMotorSpeed = t.motor_throttle_pct / 100.0;
+        plumeMesh.scale.set(1, 0.4 + 1.1 * currentMotorSpeed, 1);
+        plumeMesh.material.opacity = 0.15 + 0.45 * currentMotorSpeed;
+
+        // Update 4 Suspension Wires
+        if (t.rig_anchors_world && t.lugs_world) {
+          for (let i = 0; i < 4; i++) {
+            const a = t.rig_anchors_world[i];
+            const l = t.lugs_world[i];
+            const pA = p2t(a[0], a[1], a[2]);
+            const pB = p2t(l[0], l[1], l[2]);
+            updateWireMesh(wireMeshes[i], pA, pB, t.wire_tensions_n[i]);
+            document.getElementById(`w-${i}`).textContent = `${t.wire_tensions_n[i].toFixed(2)} N`;
+          }
+        }
+
+        // Update Sidebar KPIs
+        document.getElementById("val-roll").textContent = `${t.roll_deg.toFixed(1)}°`;
+        document.getElementById("val-pitch").textContent = `${t.pitch_deg.toFixed(1)}°`;
+        const tiltEl = document.getElementById("val-tilt");
+        tiltEl.textContent = `${t.tilt_deg.toFixed(1)}°`;
+        tiltEl.style.color = t.tilt_deg < 3.5 ? "var(--emerald)" : (t.tilt_deg < 15 ? "var(--amber)" : "var(--rose)");
+
+        document.getElementById("val-gx").textContent = t.gyro_xyz_rads[0].toFixed(2);
+        document.getElementById("val-gy").textContent = t.gyro_xyz_rads[1].toFixed(2);
+        document.getElementById("val-gz").textContent = t.gyro_xyz_rads[2].toFixed(2);
+        document.getElementById("val-simtime").textContent = `t = ${t.time_s.toFixed(2)}s`;
+        document.getElementById("val-airflow").textContent = `Slipstream: ${t.fin_airflow_ms.toFixed(1)} m/s`;
+
+        // Update Servo & Motor bars
+        const s1Pct = 50 + (t.servo_1_deg / 18.0) * 50;
+        const s2Pct = 50 + (t.servo_2_deg / 18.0) * 50;
+        document.getElementById("bar-s1").style.width = `${Math.max(2, Math.min(98, s1Pct))}%`;
+        document.getElementById("bar-s2").style.width = `${Math.max(2, Math.min(98, s2Pct))}%`;
+        document.getElementById("bar-motor").style.width = `${t.motor_throttle_pct}%`;
+        document.getElementById("val-s1").textContent = `${t.servo_1_deg.toFixed(1)}°`;
+        document.getElementById("val-s2").textContent = `${t.servo_2_deg.toFixed(1)}°`;
+        document.getElementById("val-motor").textContent = `${t.motor_throttle_pct.toFixed(0)}%`;
+
+        traceHistory.push({ roll: t.roll_deg, pitch: t.pitch_deg, s1: t.servo_1_deg });
+        if (traceHistory.length > MAX_TRACE) traceHistory.shift();
+        drawTrace();
+      };
+
+      ws.onclose = () => setTimeout(connectWS, 1000);
+    }
+    connectWS();
+
+    function sendCmd(payload) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(payload));
+      }
+    }
+
+    // Stage buttons
+    document.querySelectorAll(".stage-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".stage-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        const stageId = btn.dataset.stage;
+        const info = STAGE_DESCRIPTIONS[stageId];
+        if (info) {
+          document.getElementById("hud-stage-title").textContent = info.title;
+          document.getElementById("hud-stage-desc").textContent = info.desc;
+        }
+        document.getElementById("chk-manual").checked = false;
+        traceHistory.length = 0;
+        sendCmd({ type: "set_stage", stage_id: stageId });
+      });
+    });
+
+    // Interactive buttons
+    document.getElementById("btn-reset-std").onclick = () => {
+      traceHistory.length = 0;
+      sendCmd({ type: "reset", preset: "standard" });
+    };
+    document.getElementById("btn-reset-rand").onclick = () => {
+      traceHistory.length = 0;
+      sendCmd({ type: "reset", preset: "random" });
+    };
+    document.getElementById("btn-kick-roll").onclick = () => sendCmd({ type: "impulse", tx: 0.0032, ty: 0, tz: 0 });
+    document.getElementById("btn-kick-pitch").onclick = () => sendCmd({ type: "impulse", tx: 0, ty: -0.0032, tz: 0 });
+    document.getElementById("btn-kick-yaw").onclick = () => sendCmd({ type: "impulse", tx: 0, ty: 0, tz: 0.0008 });
+    document.getElementById("btn-pause").onclick = () => sendCmd({ type: "toggle_pause" });
+
+    // Camera presets
+    document.getElementById("btn-cam-iso").onclick = () => {
+      camera.position.set(0.95, 0.72, 1.05);
+      controls.target.set(0, 0.45, 0);
+      controls.update();
+    };
+    document.getElementById("btn-cam-gimbal").onclick = () => {
+      camera.position.set(0.28, 0.34, 0.28);
+      controls.target.set(0, 0.35, 0);
+      controls.update();
+    };
+    document.getElementById("btn-cam-top").onclick = () => {
+      camera.position.set(0.0, 1.45, 0.01);
+      controls.target.set(0, 0.45, 0);
+      controls.update();
+    };
+
+    // Manual override controls
+    const chkManual = document.getElementById("chk-manual");
+    const slS1 = document.getElementById("sl-s1");
+    const slS2 = document.getElementById("sl-s2");
+    const slM = document.getElementById("sl-m");
+
+    function updateManual() {
+      document.getElementById("lbl-s1").textContent = Number(slS1.value).toFixed(2);
+      document.getElementById("lbl-s2").textContent = Number(slS2.value).toFixed(2);
+      document.getElementById("lbl-m").textContent = `${Math.round((Number(slM.value) + 1) * 50)}%`;
+      sendCmd({
+        type: "set_manual",
+        enabled: chkManual.checked,
+        servo_1: Number(slS1.value),
+        servo_2: Number(slS2.value),
+        motor_speed: Number(slM.value)
+      });
+    }
+    chkManual.onchange = updateManual;
+    slS1.oninput = updateManual;
+    slS2.oninput = updateManual;
+    slM.oninput = updateManual;
+
+    // Resize & Render loop
+    function onResize() {
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+    window.addEventListener("resize", onResize);
+    onResize();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      propGroup.rotation.y += 0.45 * (0.2 + currentMotorSpeed);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
