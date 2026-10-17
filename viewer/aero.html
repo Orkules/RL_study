@@ -709,7 +709,7 @@
           i,
           side * (27.30 + span),
           Yh_up + dz_loc * sf + dy_loc * cf,
-          side * (Zh_dep + dz_loc * cf - dy_loc * sf)
+          Zh_dep + dz_loc * cf - dy_loc * sf
         );
       }
       posFlap.needsUpdate = true;
@@ -779,10 +779,15 @@
       paused: false,
       tunnelAirspeed: 28.0,
       dropAltitudeInit: 200.0,
-      // Attitude Euler [roll, pitch, yaw] in rad & angular velocity [p, q, r] in rad/s
+      // Attitude Euler [roll, pitch, yaw] in rad, SO(3) matrix R_wb, & angular velocity [p, q, r] in rad/s
       roll: 0.0,
       pitch: 12.0 * Math.PI / 180.0,
       yaw: -8.0 * Math.PI / 180.0,
+      R_wb: [
+        [0.9686, 0.1392, 0.2059],
+        [-0.1361, 0.9903, -0.0289],
+        [-0.2079, 0.0000, 0.9781]
+      ],
       p: 0.0,
       q: 0.0,
       r: 0.0,
@@ -815,9 +820,71 @@
       ];
     }
 
+    function rToEuler(R) {
+      const sp = Math.max(-1.0, Math.min(1.0, -R[2][0]));
+      const pitch = Math.asin(sp);
+      let roll = 0.0, yaw = 0.0;
+      if (Math.abs(sp) < 0.99999) {
+        roll = Math.atan2(R[2][1], R[2][2]);
+        yaw  = Math.atan2(R[1][0], R[0][0]);
+      } else {
+        roll = 0.0;
+        yaw  = Math.atan2(-R[0][1], R[1][1]);
+      }
+      return [roll, pitch, yaw];
+    }
+
+    function integrateSO3(R, p, q, r, dt) {
+      const dx = p * dt, dy = q * dt, dz = r * dt;
+      const ang = Math.hypot(dx, dy, dz);
+      let dR;
+      if (ang < 1e-9) {
+        dR = [
+          [1, -dz, dy],
+          [dz, 1, -dx],
+          [-dy, dx, 1]
+        ];
+      } else {
+        const kx = dx / ang, ky = dy / ang, kz = dz / ang;
+        const s = Math.sin(ang), c = 1.0 - Math.cos(ang);
+        dR = [
+          [1 - c * (ky * ky + kz * kz), -s * kz + c * kx * ky, s * ky + c * kx * kz],
+          [s * kz + c * kx * ky, 1 - c * (kx * kx + kz * kz), -s * kx + c * ky * kz],
+          [-s * ky + c * kx * kz, s * kx + c * ky * kz, 1 - c * (kx * kx + ky * ky)]
+        ];
+      }
+      const Rn = [
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0]
+      ];
+      for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+          Rn[i][j] = R[i][0] * dR[0][j] + R[i][1] * dR[1][j] + R[i][2] * dR[2][j];
+        }
+      }
+      // Orthonormalize columns
+      const n0 = Math.hypot(Rn[0][0], Rn[1][0], Rn[2][0]) || 1;
+      const c0 = [Rn[0][0] / n0, Rn[1][0] / n0, Rn[2][0] / n0];
+      const dot01 = c0[0] * Rn[0][1] + c0[1] * Rn[1][1] + c0[2] * Rn[2][1];
+      let c1 = [Rn[0][1] - dot01 * c0[0], Rn[1][1] - dot01 * c0[1], Rn[2][1] - dot01 * c0[2]];
+      const n1 = Math.hypot(c1[0], c1[1], c1[2]) || 1;
+      c1 = [c1[0] / n1, c1[1] / n1, c1[2] / n1];
+      const c2 = [
+        c0[1] * c1[2] - c0[2] * c1[1],
+        c0[2] * c1[0] - c0[0] * c1[2],
+        c0[0] * c1[1] - c0[1] * c1[0]
+      ];
+      return [
+        [c0[0], c1[0], c2[0]],
+        [c0[1], c1[1], c2[1]],
+        [c0[2], c1[2], c2[2]]
+      ];
+    }
+
     function computeLocalAero() {
       const rho = 1.225 * Math.exp(-Math.max(0, simState.altM) / 9500.0);
-      const R = eulerToR(simState.roll, simState.pitch, simState.yaw);
+      const R = simState.R_wb;
       const vN = simState.mode === "wind_tunnel" ? simState.tunnelAirspeed : simState.velN;
       const vE = simState.mode === "wind_tunnel" ? 0.0 : simState.velE;
       const vD = simState.mode === "wind_tunnel" ? 0.0 : simState.velD;
@@ -918,8 +985,8 @@
         const aServo = subDt / (0.022 + subDt);
         simState.deltaR += aServo * (simState.cmdDeltaR - simState.deltaR);
         simState.deltaL += aServo * (simState.cmdDeltaL - simState.deltaL);
-        simState.servoR = wingFlapDegToServoDeg(+simState.deltaR);
-        simState.servoL = wingFlapDegToServoDeg(-simState.deltaL);
+        simState.servoR = wingFlapDegToServoDeg(simState.deltaR);
+        simState.servoL = wingFlapDegToServoDeg(simState.deltaL);
 
         const aero = computeLocalAero();
         const dp = (aero.tau_x - (Izz - Iyy) * simState.q * simState.r) / Ixx;
@@ -930,13 +997,12 @@
         simState.q = Math.max(-35, Math.min(35, simState.q + dq * subDt));
         simState.r = Math.max(-35, Math.min(35, simState.r + dr * subDt));
 
-        const cr = Math.cos(simState.roll), sr = Math.sin(simState.roll);
-        const cp = Math.max(0.08, Math.abs(Math.cos(simState.pitch))) * Math.sign(Math.cos(simState.pitch) || 1);
-        const tp = Math.sin(simState.pitch) / cp;
-
-        simState.roll  += (simState.p + (simState.q * sr + simState.r * cr) * tp) * subDt;
-        simState.pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, simState.pitch + (simState.q * cr - simState.r * sr) * subDt));
-        simState.yaw   += ((simState.q * sr + simState.r * cr) / cp) * subDt;
+        // Gimbal-lock-free SO(3) rotation matrix update
+        simState.R_wb = integrateSO3(simState.R_wb, simState.p, simState.q, simState.r, subDt);
+        const eul = rToEuler(simState.R_wb);
+        simState.roll = eul[0];
+        simState.pitch = eul[1];
+        simState.yaw = eul[2];
 
         if (simState.mode === "free_drop") {
           if (simState.altM > 0.0) {
@@ -988,6 +1054,11 @@
           simState.roll  = d.roll_deg * Math.PI / 180.0;
           simState.pitch = d.pitch_deg * Math.PI / 180.0;
           simState.yaw   = d.yaw_deg * Math.PI / 180.0;
+          if (d.R_wb) {
+          simState.R_wb = d.R_wb;
+        } else {
+          simState.R_wb = eulerToR(simState.roll, simState.pitch, simState.yaw);
+        }
           simState.p = d.gyro_xyz_rads[0];
           simState.q = d.gyro_xyz_rads[1];
           simState.r = d.gyro_xyz_rads[2];
@@ -1043,6 +1114,7 @@
         simState.roll = 0.0;
         simState.pitch = 14.0 * Math.PI / 180.0;
         simState.yaw = -8.0 * Math.PI / 180.0;
+        simState.R_wb = eulerToR(simState.roll, simState.pitch, simState.yaw);
         simState.p = simState.q = simState.r = 0.0;
         simState.posN = simState.posE = simState.altM = 0.0;
       } else {
@@ -1050,6 +1122,7 @@
         simState.roll = 0.0;
         simState.pitch = -90.0 * Math.PI / 180.0;
         simState.yaw = 0.0;
+        simState.R_wb = eulerToR(simState.roll, simState.pitch, simState.yaw);
         simState.p = simState.q = simState.r = 0.0;
         simState.posN = 0.0;
         simState.posE = 0.0;
@@ -1065,8 +1138,10 @@
     document.getElementById("btn-mode-drop").onclick   = () => setMode("free_drop");
 
     document.getElementById("btn-kick").onclick = () => {
+      simState.roll  = 0.0;
       simState.pitch = 25.0 * Math.PI / 180.0;
       simState.yaw   = -18.0 * Math.PI / 180.0;
+      simState.R_wb  = eulerToR(simState.roll, simState.pitch, simState.yaw);
       simState.p = 0.0; simState.q = 0.0; simState.r = 0.0;
       sendWs({ type: "kick_attitude", angles_deg: [0.0, 25.0, -18.0], omega_rads: [0, 0, 0] });
     };
@@ -1108,8 +1183,8 @@
     function syncServosFromFlaps(dR, dL) {
       simState.cmdDeltaR = Math.max(-MAX_WING_FLAP_DEG, Math.min(MAX_WING_FLAP_DEG, dR));
       simState.cmdDeltaL = Math.max(-MAX_WING_FLAP_DEG, Math.min(MAX_WING_FLAP_DEG, dL));
-      const sR = wingFlapDegToServoDeg(+simState.cmdDeltaR);
-      const sL = wingFlapDegToServoDeg(-simState.cmdDeltaL);
+      const sR = wingFlapDegToServoDeg(simState.cmdDeltaR);
+      const sL = wingFlapDegToServoDeg(simState.cmdDeltaL);
       slServoR.value = sR;
       slServoL.value = sL;
       document.getElementById("val-servo-r").textContent = `${sR >= 0 ? "+" : ""}${sR.toFixed(1)}°`;
@@ -1134,7 +1209,7 @@
       document.getElementById("val-servo-r").textContent = `${sR >= 0 ? "+" : ""}${sR.toFixed(1)}°`;
       document.getElementById("val-servo-l").textContent = `${sL >= 0 ? "+" : ""}${sL.toFixed(1)}°`;
       const fR = solveTwoCircleKinematics(sR).flapDeg;
-      const fL = -solveTwoCircleKinematics(sL).flapDeg;
+      const fL = solveTwoCircleKinematics(sL).flapDeg;
       simState.cmdDeltaR = fR;
       simState.cmdDeltaL = fL;
       sendWs({ type: "set_servos", servo_r_deg: sR, servo_l_deg: sL });
@@ -1218,9 +1293,17 @@
         controls.target.copy(vehicleGroup.position);
       }
 
-      // Apply 3D attitude (ZYX Euler -> Three.js YXZ order where X=Roll, Z=Pitch, -Y=Yaw)
-      const qEuler = new THREE.Euler(simState.roll, -simState.yaw, simState.pitch, "YXZ");
-      vehicleGroup.quaternion.setFromEuler(qEuler);
+      // Apply 3D attitude directly from the exact SO(3) rotation matrix R_wb (no Euler gimbal lock!)
+      // Map NED body basis R_wb to Three.js world basis (X_three = North_0, Y_three = -Down_2, Z_three = East_1)
+      // and local vehicle axes (X_veh = x_b_0, Y_veh = -z_b_2, Z_veh = y_b_1):
+      const R = simState.R_wb;
+      const mRot = new THREE.Matrix4().set(
+         R[0][0], -R[0][2],  R[0][1], 0,
+        -R[2][0],  R[2][2], -R[2][1], 0,
+         R[1][0], -R[1][2],  R[1][1], 0,
+               0,        0,        0, 1
+      );
+      vehicleGroup.quaternion.setFromRotationMatrix(mRot);
 
       // Update 3D Aerodynamic Force Vectors
       const liftLen = Math.min(140, Math.max(8, Math.abs(aero.lift_tot) * 24));
