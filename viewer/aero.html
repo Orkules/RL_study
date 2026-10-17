@@ -253,9 +253,10 @@
       <h1>300 g Delta-Wing Airframe: Wind-Tunnel & Free-Drop Flight Dynamics Simulator</h1>
     </div>
     <div class="nav-links">
-      <a class="nav-link" href="/">Sim 1: CAD & Linkage (`/`)</a>
-      <a class="nav-link active" href="/aero">Sim 2: 3D Aerodynamics (`/aero`)</a>
-      <button id="cam-follow" class="active">Follow Cam</button>
+      <a class="nav-link" href="/" onclick="if(location.protocol==='file:'){location.href='index.html';return false;}">← Sim 1: CAD & Linkage</a>
+      <a class="nav-link active" href="/aero">Sim 2: 3D Aerodynamics & Free-Fall</a>
+      <button id="cam-follow" class="active">Follow Object</button>
+      <button id="cam-overview">Full Trajectory View</button>
       <button id="cam-side">Side AoA View</button>
       <button id="cam-rear">Rear Tail View</button>
     </div>
@@ -553,23 +554,64 @@
     });
     scene.add(tunnelGroup);
 
-    // Free-Drop 3D World Ground Grid (1 m = 100 units in drop scene, or scaled seamlessly)
-    // We use 1 world unit = 1 mm around the vehicle, and in Free-Drop mode we scale environment or render ground + trail
-    const WORLD_SCALE = 25.0; // 1 meter in free-drop = 25 scene units so the 280 mm airframe is clearly visible while gliding!
+    // Free-Drop 3D World Ground & Daylight Sky
+    const WORLD_SCALE = 25.0; // 1 meter in free-drop = 25 scene units
     const dropWorldGroup = new THREE.Group();
     dropWorldGroup.visible = false;
-    const groundGrid = new THREE.GridHelper(30000, 120, 0x10b981, 0x0f2922);
-    groundGrid.position.y = 0;
+
+    // Solid green/earthy terrain ground plane at Altitude = 0 m
+    const groundPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(60000, 60000),
+      new THREE.MeshStandardMaterial({ color: 0x65a30d, roughness: 0.9, metalness: 0.05 })
+    );
+    groundPlane.rotation.x = -Math.PI / 2;
+    groundPlane.position.y = -0.5;
+    dropWorldGroup.add(groundPlane);
+
+    // High-contrast ground grid (every 25 m)
+    const groundGrid = new THREE.GridHelper(30000, 60, 0x1e293b, 0x365314);
+    groundGrid.position.y = 0.2;
     dropWorldGroup.add(groundGrid);
 
-    // Altitude marker pillars in Free-Drop world
-    const pillarMat = new THREE.LineBasicMaterial({ color: 0x334155, transparent: true, opacity: 0.5 });
-    for (let gx = -500; gx <= 2500; gx += 250) {
-      for (let gz = -500; gz <= 500; gz += 250) {
-        const pts = [new THREE.Vector3(gx * WORLD_SCALE, 0, gz * WORLD_SCALE), new THREE.Vector3(gx * WORLD_SCALE, 500 * WORLD_SCALE, gz * WORLD_SCALE)];
-        dropWorldGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), pillarMat));
-      }
-    }
+    // Distance rings on the ground (50 m, 100 m, 200 m, 300 m, 500 m from release point)
+    [50, 100, 200, 300, 500].forEach((distM) => {
+      const rRing = new THREE.Mesh(
+        new THREE.RingGeometry((distM - 1.2) * WORLD_SCALE, (distM + 1.2) * WORLD_SCALE, 64),
+        new THREE.MeshBasicMaterial({ color: distM === 100 || distM === 300 ? 0xdc2626 : 0xffffff, side: THREE.DoubleSide })
+      );
+      rRing.rotation.x = -Math.PI / 2;
+      rRing.position.y = 1.0;
+      dropWorldGroup.add(rRing);
+    });
+
+    // Vertical drop-line from the release point (0, alt, 0) down to the ground origin (0, 0, 0)
+    const releaseDropLineGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 600 * WORLD_SCALE, 0)
+    ]);
+    const releaseDropLine = new THREE.Line(
+      releaseDropLineGeo,
+      new THREE.LineDashedMaterial({ color: 0x1e293b, dashSize: 40, gapSize: 25 })
+    );
+    releaseDropLine.computeLineDistances();
+    dropWorldGroup.add(releaseDropLine);
+
+    // Live Ground Shadow / Plumb-Line under the falling object so you always see height above ground
+    const groundShadowMesh = new THREE.Mesh(
+      new THREE.RingGeometry(8, 38, 32),
+      new THREE.MeshBasicMaterial({ color: 0xdc2626, side: THREE.DoubleSide })
+    );
+    groundShadowMesh.rotation.x = -Math.PI / 2;
+    groundShadowMesh.position.y = 1.5;
+    dropWorldGroup.add(groundShadowMesh);
+
+    const plumbLineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 100, 0)]);
+    const plumbLine = new THREE.Line(
+      plumbLineGeo,
+      new THREE.LineBasicMaterial({ color: 0x0f172a, transparent: true, opacity: 0.45 })
+    );
+    dropWorldGroup.add(plumbLine);
+
     scene.add(dropWorldGroup);
 
     // Vehicle 6-DOF Root Group (Origin is EXACTLY at the Center of Mass: Y_cad = 91.3 mm!)
@@ -759,17 +801,31 @@
       streamParticles.push(m);
     }
 
-    // 3D Trajectory Ribbon Trail for Free-Drop Glide Mode
-    const maxTrailPts = 500;
+    // 3D Trajectory Line + Breadcrumb Spheres for Free-Drop Glide Mode (tracks the entire drop until ground impact!)
+    const maxTrailPts = 4000;
     const trailPositions = new Float32Array(maxTrailPts * 3);
     const trailGeo = new THREE.BufferGeometry();
     trailGeo.setAttribute("position", new THREE.BufferAttribute(trailPositions, 3));
     trailGeo.setDrawRange(0, 0);
     const trailLine = new THREE.Line(
       trailGeo,
-      new THREE.LineBasicMaterial({ color: 0x38bdf8, linewidth: 2 })
+      new THREE.LineBasicMaterial({ color: 0xdc2626, linewidth: 3 })
     );
+    trailLine.frustumCulled = false;
     scene.add(trailLine);
+
+    // Bright trajectory spheres placed along the flight path so the line is thick and unmistakable at any zoom level
+    const trailMarkersGroup = new THREE.Group();
+    scene.add(trailMarkersGroup);
+    const markerSpheres = [];
+    const markerSphereGeo = new THREE.SphereGeometry(14, 10, 10);
+    const markerSphereMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
+    for (let i = 0; i < 200; i++) {
+      const sp = new THREE.Mesh(markerSphereGeo, markerSphereMat);
+      sp.visible = false;
+      trailMarkersGroup.add(sp);
+      markerSpheres.push(sp);
+    }
 
     // ============================================================================
     // 4. STANDALONE + WEBSOCKET 6-DOF AERODYNAMIC PHYSICS ENGINE (Matches sim/aero_glide_sim.py)
@@ -1072,6 +1128,14 @@
           simState.velN = d.velocity_ned_ms[0];
           simState.velE = d.velocity_ned_ms[1];
           simState.velD = d.velocity_ned_ms[2];
+          if (simState.mode === "free_drop") {
+            const pt = [simState.posN * WORLD_SCALE, simState.altM * WORLD_SCALE, simState.posE * WORLD_SCALE];
+            const last = simState.trail[simState.trail.length - 1];
+            if (!last || Math.hypot(pt[0] - last[0], pt[1] - last[1], pt[2] - last[2]) > 2.0) {
+              simState.trail.push(pt);
+              if (simState.trail.length > maxTrailPts) simState.trail.shift();
+            }
+          }
         };
       }
     } catch (e) {}
@@ -1107,9 +1171,15 @@
       streamGroup.visible = isTunnel;
       dropWorldGroup.visible = !isTunnel;
       trailLine.visible = !isTunnel;
+      trailMarkersGroup.visible = !isTunnel;
+
+      // Switch between Dark Wind-Tunnel Enclosure and Bright Daylight Sky + Green Ground
+      scene.background = new THREE.Color(isTunnel ? 0x05080f : 0xbae6fd);
+      scene.fog = new THREE.FogExp2(isTunnel ? 0x05080f : 0xbae6fd, isTunnel ? 0.00018 : 0.00004);
 
       if (dropAlt !== null) simState.dropAltitudeInit = dropAlt;
       simState.trail = [];
+      for (const sp of markerSpheres) sp.visible = false;
       if (isTunnel) {
         simState.roll = 0.0;
         simState.pitch = 14.0 * Math.PI / 180.0;
@@ -1117,6 +1187,8 @@
         simState.R_wb = eulerToR(simState.roll, simState.pitch, simState.yaw);
         simState.p = simState.q = simState.r = 0.0;
         simState.posN = simState.posE = simState.altM = 0.0;
+        vehicleGroup.position.set(0, 0, 0);
+        setCamPreset("follow");
       } else {
         // Free-Drop starts held upside-down in the air with the nose pointing straight down (-90 deg pitch) and 0 speed
         simState.roll = 0.0;
@@ -1130,6 +1202,9 @@
         simState.velN = 0.0;
         simState.velE = 0.0;
         simState.velD = 0.1;
+        simState.trail.push([0, simState.altM * WORLD_SCALE, 0]);
+        vehicleGroup.position.set(0, simState.altM * WORLD_SCALE, 0);
+        setCamPreset(camPreset);
       }
       sendWs({ type: "set_mode", mode: newMode, altitude_m: simState.dropAltitudeInit, airspeed_ms: simState.tunnelAirspeed });
     }
@@ -1242,18 +1317,27 @@
     function setCamPreset(p) {
       camPreset = p;
       document.getElementById("cam-follow").classList.toggle("active", p === "follow");
+      document.getElementById("cam-overview").classList.toggle("active", p === "overview");
       document.getElementById("cam-side").classList.toggle("active", p === "side");
       document.getElementById("cam-rear").classList.toggle("active", p === "rear");
       const target = vehicleGroup.position.clone();
-      if (p === "follow") camera.position.copy(target).add(new THREE.Vector3(-240, 125, 250));
-      if (p === "side")   camera.position.copy(target).add(new THREE.Vector3(0, 20, 340));
-      if (p === "rear")   camera.position.copy(target).add(new THREE.Vector3(-310, 45, 0));
+      if (p === "follow")   camera.position.copy(target).add(new THREE.Vector3(-230, 125, 250));
+      if (p === "side")     camera.position.copy(target).add(new THREE.Vector3(0, 20, 340));
+      if (p === "rear")     camera.position.copy(target).add(new THREE.Vector3(-310, 45, 0));
+      if (p === "overview") {
+        const midY = (simState.dropAltitudeInit * WORLD_SCALE) * 0.45;
+        controls.target.set(80 * WORLD_SCALE, midY, 0);
+        camera.position.set(80 * WORLD_SCALE, midY + 1200, 5800);
+        controls.update();
+        return;
+      }
       controls.target.copy(target);
       controls.update();
     }
-    document.getElementById("cam-follow").onclick = () => setCamPreset("follow");
-    document.getElementById("cam-side").onclick   = () => setCamPreset("side");
-    document.getElementById("cam-rear").onclick   = () => setCamPreset("rear");
+    document.getElementById("cam-follow").onclick   = () => setCamPreset("follow");
+    document.getElementById("cam-overview").onclick = () => setCamPreset("overview");
+    document.getElementById("cam-side").onclick     = () => setCamPreset("side");
+    document.getElementById("cam-rear").onclick     = () => setCamPreset("rear");
 
     function onResize() {
       const w = viewport.clientWidth, h = viewport.clientHeight;
@@ -1281,16 +1365,29 @@
       const prevPos = vehicleGroup.position.clone();
       if (simState.mode === "wind_tunnel") {
         vehicleGroup.position.set(0, 0, 0);
+        vehicleGroup.scale.set(1, 1, 1);
       } else {
-        vehicleGroup.position.set(
-          simState.posN * WORLD_SCALE,
-          simState.altM * WORLD_SCALE,
-          simState.posE * WORLD_SCALE
-        );
-        // Camera follows falling/gliding missile smoothly
-        const deltaPos = vehicleGroup.position.clone().sub(prevPos);
-        camera.position.add(deltaPos);
-        controls.target.copy(vehicleGroup.position);
+        const vx = simState.posN * WORLD_SCALE;
+        const vy = simState.altM * WORLD_SCALE;
+        const vz = simState.posE * WORLD_SCALE;
+        vehicleGroup.position.set(vx, vy, vz);
+        // Scale vehicle dynamically when in Overview mode so it is never too small to see!
+        const camDist = camera.position.distanceTo(vehicleGroup.position);
+        const sVis = camPreset === "overview" ? Math.max(1.0, Math.min(8.0, camDist / 450.0)) : 1.0;
+        vehicleGroup.scale.set(sVis, sVis, sVis);
+
+        // Update live ground shadow & vertical plumb line under the missile
+        groundShadowMesh.position.set(vx, 1.5, vz);
+        const pPos = plumbLine.geometry.attributes.position;
+        pPos.setXYZ(0, vx, 0, vz);
+        pPos.setXYZ(1, vx, vy, vz);
+        pPos.needsUpdate = true;
+
+        if (camPreset !== "overview") {
+          const deltaPos = vehicleGroup.position.clone().sub(prevPos);
+          camera.position.add(deltaPos);
+          controls.target.copy(vehicleGroup.position);
+        }
       }
 
       // Apply 3D attitude directly from the exact SO(3) rotation matrix R_wb (no Euler gimbal lock!)
@@ -1345,7 +1442,7 @@
           if (p.position.x < -260) p.position.x = 260;
         }
       } else {
-        // Update 3D Trajectory Ribbon Trail
+        // Update 3D Trajectory Line + Breadcrumb Spheres all the way to the ground
         const nPts = simState.trail.length;
         for (let i = 0; i < nPts; i++) {
           trailPositions[3 * i]     = simState.trail[i][0];
@@ -1354,6 +1451,17 @@
         }
         trailGeo.attributes.position.needsUpdate = true;
         trailGeo.setDrawRange(0, nPts);
+
+        const stepM = Math.max(1, Math.floor(nPts / markerSpheres.length));
+        for (let m = 0; m < markerSpheres.length; m++) {
+          const idx = m * stepM;
+          if (idx < nPts) {
+            markerSpheres[m].visible = true;
+            markerSpheres[m].position.set(simState.trail[idx][0], simState.trail[idx][1], simState.trail[idx][2]);
+          } else {
+            markerSpheres[m].visible = false;
+          }
+        }
       }
 
       // Update HUD & Sidebar Telemetry Readouts
