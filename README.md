@@ -4,15 +4,14 @@ This repository contains **3 distinct simulations** built around the **9 printab
 
 1. **Simulation 1 — 3D Mechanical CAD & 4-Bar Wing Flap Linkage Simulator (`viewer/index.html`, `sim/wing_linkage.py`):**
    - Served at **`http://localhost:8000/`** (and works 100% standalone by opening `viewer/index.html`).
-   - Assembles all 9 `.STL` parts in millimeter coordinates, verifies flush SG90 servo placement, inspects the concentric pivot pins with adjustable shell opacity, and solves the exact forward/inverse 4-bar linkage kinematics (`MAX_WING_FLAP_DEG = 50.0` $\iff$ servo range `[-49.20°, +53.11°]`).
-2. **Simulation 2 — 3D Aerodynamic & Free-Drop Flight Dynamics Simulator (`viewer/aero.html`, `sim/aero_glide_sim.py`):**
+   - Assembles all 9 `.STL` parts in millimeter coordinates, verifies centered flush SG90 servo placement (`X = 0.0 mm, Y = 28.0 mm, Z = ±7.0 mm`), inspects the concentric pivot pins with adjustable shell opacity, and solves the exact forward/inverse 4-bar linkage kinematics (`MAX_WING_FLAP_DEG = 50.0` $\iff$ servo range `[-49.20°, +53.11°]`, `wing_flap_deg_to_servo_deg`).
+   - Full documentation: **[`docs/CAD_LINKAGE_SIMULATOR.md`](docs/CAD_LINKAGE_SIMULATOR.md)**
+2. **Simulation 2 — 3D Aerodynamic Wind-Tunnel & Free-Drop Flight Dynamics Simulator (`viewer/aero.html`, `sim/aero_glide_sim.py`):**
    - Served at **`http://localhost:8000/aero`** with live WebSocket telemetry at `/ws/aero` (and works 100% standalone by opening `viewer/aero.html` directly in a browser with all 9 `.STL` meshes embedded).
-   - Models the **300 g** (`0.300 kg`) airframe (`156.3 mm` total length, `Ø43.2 mm` fuselage, `280.2 mm` wingspan) with its **Center of Mass (CoM)** at the `HEAD.STL`/`BODY.STL` joint (`91.3 mm` from tail base, `~58.4%` forward) and **Wing/Fin Center of Pressure (CoP)** at `28.0 mm` from tail base (`63.3 mm` behind CoM), providing strong passive weathercock stability in pitch and yaw.
-   - Features both **Wind-Tunnel Mode** (`0..100 m/s` / `0..360 km/h` with fixed CoM and free 3D attitude rotation) and **Free-Drop Glide Mode** (`200 m` / `500 m` 3D world drop with gravity, 6-DOF rigid-body dynamics, trajectory ribbon trail, and follow camera).
+   - Models the **300 g** (`0.300 kg`) airframe (`156.3 mm` total length, `Ø43.2 mm` fuselage, `280.2 mm` wingspan) with its **Center of Mass (CoM)** at the `HEAD.STL`/`BODY.STL` joint (`91.3 mm` from tail base, `~58.4%` forward) and **Wing/Fin Center of Pressure (CoP)** at `28.0 mm` from tail base (`63.3 mm` behind CoM), backed by MuJoCo (`mujoco`) rigid-body & ellipsoid fluid dynamics and gimbal-lock-free $SO(3)$ rotation matrix integration (`integrate_rotation_so3`).
+   - Full documentation: **[`docs/AERODYNAMIC_SIMULATOR.md`](docs/AERODYNAMIC_SIMULATOR.md)**
 3. **Simulation 3 — Step 1 RL Environment (`sim/tethered_drone_env.py`, `rl/ppo_agent.py`, `train_step1.py`):**
    - PPO reinforcement learning environment and trained actor-critic checkpoints (`checkpoints/stage_0_random.pt` .. `stage_4_stabilized.pt`).
-
-For full geometric specifications, pin coordinates, and kinematics derivations, see [`docs/CAD_LINKAGE_SIMULATOR.md`](docs/CAD_LINKAGE_SIMULATOR.md).
 
 ---
 
@@ -50,40 +49,57 @@ MAX_WING_FLAP_DEG: float = 50.0
 
 ---
 
-## 2. Simulation 2: 3D Aerodynamic & Free-Drop Flight Dynamics Simulator (`viewer/aero.html` & `sim/aero_glide_sim.py`)
+## 2. Simulation 2: 3D Aerodynamic Wind-Tunnel & Free-Drop Flight Dynamics Simulator (`viewer/aero.html` & `sim/aero_glide_sim.py`)
+
+See **[`docs/AERODYNAMIC_SIMULATOR.md`](docs/AERODYNAMIC_SIMULATOR.md)** for complete equations, MuJoCo MJCF formulation, and aerodynamic analysis.
 
 ### Physical & Aerodynamic Specifications
 
 - **Total Mass:** `300 g` (`0.300 kg`)
-- **Airframe Dimensions:** Total length `156.3 mm` (`BODY.STL` `0..91.3 mm` + `HEAD.STL` `91.3..156.3 mm`), fuselage diameter `43.2 mm`, wingspan `280.2 mm`.
+- **Airframe Dimensions:** Total length `156.3 mm` (`BODY.STL` `0..91.3 mm` + `HEAD.STL` `91.3..156.3 mm`), fuselage diameter `43.2 mm`, wingspan `280.2 mm`, mean aerodynamic chord `42.0 mm`.
 - **Center of Mass (CoM):** Located at the connection between `HEAD.STL` and `BODY.STL` at **`91.3 mm` from the tail base** (`~58.4%` forward toward the nose).
 - **Aerodynamic Surfaces & Centers of Pressure:**
-  1. **Swept Delta Wings (Left & Right):** Span `280.2 mm`, root chord `~57 mm` (`Y = 1.3 .. 58.1 mm`), Center of Pressure at `~28.0 mm` from the tail base (**`63.3 mm` behind the CoM** $\implies$ strong passive weathercock pitch stability $C_{m\alpha} < 0$).
-  2. **Vertical Tail Fin & Wingtip Winglets (`BODY.STL`):** CoP `63.3 mm` behind the CoM, providing passive yaw weathercock stability ($C_{n\beta} > 0$) and aerodynamic roll/yaw rate damping ($C_{lp}, C_{nr}$).
-  3. **Two Trailing-Edge Wing Flaps (`WING FLAP.STL`):** Span `87.6 mm` each (`|X| = 27.3 .. 114.9 mm`), chord `20.2 mm`, CoP at `X = ±71.1 mm` and `69.0 mm` behind the CoM, using a nonlinear aerodynamic model ($\sin\delta\cos\delta$ normal pressure lift + $\sin^2\delta$ flat-plate flap drag) driven through the exact 4-bar linkage (`MAX_WING_FLAP_DEG = 50.0`).
+  1. **Swept Delta Wings (Left & Right):** Span `280.2 mm`, planform area `0.0112 m²`, Center of Pressure at `28.0 mm` from the tail base (**`63.3 mm` behind the CoM** $\implies$ strong passive weathercock pitch stability $C_{m\alpha} < 0$).
+  2. **Vertical Tail Fin & Wingtip Winglets (`BODY.STL`):** Reference area `0.0045 m²`, CoP at `28.0 mm` from tail (**`63.3 mm` behind the CoM**), providing passive yaw weathercock stability ($C_{n\beta} > 0$) and aerodynamic roll/yaw rate damping ($C_{lp}, C_{nr}$).
+  3. **Two Trailing-Edge Wing Flaps (`WING FLAP.STL`):** Span `87.6 mm` each (`|X| = 27.3 .. 114.9 mm`), chord `20.2 mm`, CoP at `X = ±71.1 mm` and `22.3 mm` from tail (**`69.0 mm` behind the CoM**), driven through the exact 4-bar linkage (`MAX_WING_FLAP_DEG = 50.0`) with software-matched servo polarity (`Pitch Mix` $\delta_R = \delta_L$, `Roll Mix` $\delta_R = -\delta_L$).
 
 ### Two Interactive Modes in `viewer/aero.html`
 
-1. **Wind-Tunnel Mode (Interactive Speed & Attitude Testing):**
-   - Holds the CoM (`91.3 mm` from tail) at the center of the 3D wind tunnel while the body rotates freely in 3D (Roll, Pitch, Yaw / Angle of Attack $\alpha$ and Sideslip $\beta$).
-   - Interactive **Airspeed slider** (`0 m/s` to `100 m/s` / `0` to `360 km/h`) and **4-Bar Wing Flap / Servo sliders** (`Center Wings (0°)`, `Pitch Mix`, `Roll Mix`, `Right Servo`, `Left Servo`).
-   - Displays live 3D Lift, Drag, Flap Normal Force, and Velocity vectors, animated airflow streamlines, and telemetry readouts ($\alpha, \beta, p, q, r, \text{Lift}, \text{Drag}, L/D, \text{Roll/Pitch/Yaw moments}$).
-2. **Free-Drop Glide Mode (3D World Drop from Altitude):**
-   - Releases the `300 g` airframe in a 3D world from configurable altitude (`200 m`, `500 m`, or `50..600 m`) under gravity (`9.81 m/s²`) with full 6-DOF rigid-body flight dynamics.
-   - Camera follows the falling/gliding vehicle in 3D with a ground grid, 3D trajectory ribbon trail, velocity vector arrow, and live HUD while the user steers the servos in real time.
+1. **Mode 1 — 3D Wind-Tunnel Mode (`SIM_MODE_WIND_TUNNEL`):**
+   - Holds the CoM (`91.3 mm` from tail) at the center of the 3D wind tunnel while the body rotates freely in 3-DOF (Roll, Pitch, Yaw / Angle of Attack $\alpha$ and Sideslip $\beta$) using gimbal-lock-free $SO(3)$ integration.
+   - Interactive **Freestream Airspeed slider** (`0 m/s` to `100 m/s` / `0` to `360 km/h`) with presets (`15, 35, 60, 90 m/s`), **`Kick AoA (+25° Pitch / -18° Yaw)`** disturbance button, and **4-Bar Wing Flap / Servo sliders** (`Center Wings (0°)`, `Pitch Mix`, `Roll Mix`, `Right Servo`, `Left Servo`).
+   - Displays live 3D Lift (green), Drag (red), Flap Normal Force (cyan), and Velocity (purple) vector arrows, CoM (yellow) & CoP (pink) spheres, animated airflow streamlines, and telemetry readouts ($\alpha, \beta, p, q, r, \text{Lift}, \text{Drag}, L/D, \text{Roll/Pitch/Yaw moments}$).
+2. **Mode 2 — 3D World Free-Drop Glide Mode (`SIM_MODE_FREE_DROP`):**
+   - Releases the `300 g` airframe from rest (`0 m/s`) pointing straight down (**`-90°` nose-down pitch**) at a configurable altitude (`50 .. 600 m` slider, plus one-click `Drop from 200 m` and `Drop from 500 m` buttons) under gravity (`9.81 m/s²`).
+   - High-contrast sky-blue atmosphere and matte-green ground plane (zero fog) with a 3D orange trajectory trail + breadcrumb spheres, a live bottom-right **2D Altitude-vs-Distance trajectory profile map**, **`Follow Object`** vs **`Full Trajectory View`** camera presets, and a bottom-left **3-arrow `X · Y · Z` World Axes gizmo**.
+
+### Summary of Glide Performance
+
+- **Peak Lift-to-Drag Ratio ($L/D_{\max}$):** **`1.56 : 1`** achieved at **`+26.5°` symmetric pitch flap** (`+27.22°` SG90 servo angle), trimming the airframe at **`+9.9°` Angle of Attack** (`-32.7°` glide slope angle at `~35.6 m/s` / `128 km/h`).
+- **Horizontal Glide Reach vs. Release Altitude (from `-90°` vertical nose-down release at rest):**
+  - **`100 m` drop:** `23.8 m` (fixed `+26.5°` flap) / `~75 m` (optimal pull-out)
+  - **`300 m` drop:** `251.5 m` (fixed `+26.5°` flap) / `~355 m` (optimal pull-out)
+  - **`500 m` drop:** `571.0 m` (fixed `+26.5°` flap) / `~665 m` (optimal pull-out)
+  - **`1,000 m` drop:** `1,343.0 m` (`1.34 km`, fixed `+26.5°` flap) / `~1,445 m` (`1.45 km`, optimal pull-out)
 
 ---
 
 ## Launching the Simulators
 
+### 1. FastAPI & WebSocket Server (`viewer/server.py`)
+
 ```bash
 python3 -m uvicorn viewer.server:app --host 0.0.0.0 --port 8000
 ```
 
-- **Simulation 1 (CAD & 4-Bar Linkage Review):** `http://localhost:8000/` (or open `viewer/index.html` directly)
-- **Simulation 2 (3D Aerodynamic & Free-Drop Simulator):** `http://localhost:8000/aero` (or open `viewer/aero.html` directly)
+- **Simulation 1 (3D CAD & 4-Bar Linkage Review):** `http://localhost:8000/`
+- **Simulation 2 (3D Aerodynamic Wind-Tunnel & Free-Drop Simulator):** `http://localhost:8000/aero`
 
-### Running Unit Tests
+### 2. Standalone Browser Mode (No Server Needed)
+
+Open `viewer/index.html` or `viewer/aero.html` directly in any modern browser (`file://`). All 9 `.STL` meshes and the 4-bar linkage + 6-DOF $SO(3)$ aerodynamic physics engine are self-contained inside the HTML files.
+
+### 3. Running Unit Tests
 
 ```bash
 python3 -m pytest -v
