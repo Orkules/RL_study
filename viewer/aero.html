@@ -365,15 +365,16 @@
       </div>
 
       <div class="box" id="box-drop-controls" style="display:none;">
-        <h2>3D World Free-Drop Release Controls</h2>
+        <h2>3D World Free-Drop Release Controls (Up to 1 km)</h2>
         <div class="slider-row">
           <span>Release Altitude</span>
-          <input type="range" id="sl-drop-alt" min="50" max="600" step="10" value="200" />
-          <strong id="val-drop-alt" style="text-align:right">200 m</strong>
+          <input type="range" id="sl-drop-alt" min="50" max="1000" step="10" value="500" />
+          <strong id="val-drop-alt" style="text-align:right">500 m</strong>
         </div>
         <div class="btn-row">
-          <button id="btn-drop-200" class="primary">Drop from 200 m</button>
-          <button id="btn-drop-500" class="primary">Drop from 500 m</button>
+          <button id="btn-drop-200" class="primary">Drop 200 m</button>
+          <button id="btn-drop-500" class="primary">Drop 500 m</button>
+          <button id="btn-drop-1000" class="primary">Drop 1000 m (1 km)</button>
         </div>
       </div>
 
@@ -563,49 +564,75 @@
     });
     scene.add(tunnelGroup);
 
-    // Free-Drop 3D World Ground & Daylight Sky
+    // Free-Drop 3D World Ground (6 km diameter = 6,000 m x 6,000 m for 1 km drop @ 3:1 glide ratio)
     const WORLD_SCALE = 25.0; // 1 meter in free-drop = 25 scene units
+    const GROUND_DIAMETER_M = 6000.0; // 6 km diameter (±3 km radius from drop origin)
+    const GROUND_SIZE_UNITS = GROUND_DIAMETER_M * WORLD_SCALE; // 150,000 scene units
     const dropWorldGroup = new THREE.Group();
     dropWorldGroup.visible = false;
 
-    // Solid unlit matte green terrain ground plane at Altitude = 0 m (MeshBasicMaterial so there is ZERO light blowout or horizon haze!)
+    // procedural canvas texture so the grid ("net") is painted DIRECTLY onto the green ground plane
+    // and can NEVER separate, float, or move independently from the ground color!
+    const groundTexCanvas = document.createElement("canvas");
+    groundTexCanvas.width = 512;
+    groundTexCanvas.height = 512;
+    const gCtx = groundTexCanvas.getContext("2d");
+    gCtx.fillStyle = "#2d6a4f";
+    gCtx.fillRect(0, 0, 512, 512);
+    // Sub-grid lines (every 50 m)
+    gCtx.strokeStyle = "#1b4332";
+    gCtx.lineWidth = 4;
+    gCtx.strokeRect(0, 0, 512, 512);
+    gCtx.strokeStyle = "rgba(27, 67, 50, 0.55)";
+    gCtx.lineWidth = 2;
+    gCtx.beginPath();
+    gCtx.moveTo(256, 0); gCtx.lineTo(256, 512);
+    gCtx.moveTo(0, 256); gCtx.lineTo(512, 256);
+    gCtx.stroke();
+
+    const groundTex = new THREE.CanvasTexture(groundTexCanvas);
+    groundTex.wrapS = THREE.RepeatWrapping;
+    groundTex.wrapT = THREE.RepeatWrapping;
+    // 6,000 m / 100 m per tile = 60 x 60 tiles across the 6 km ground
+    groundTex.repeat.set(60, 60);
+    groundTex.anisotropy = 8;
+
     const groundPlane = new THREE.Mesh(
-      new THREE.PlaneGeometry(3000000, 3000000),
-      new THREE.MeshBasicMaterial({ color: 0x2d6a4f })
+      new THREE.PlaneGeometry(GROUND_SIZE_UNITS, GROUND_SIZE_UNITS),
+      new THREE.MeshBasicMaterial({ map: groundTex })
     );
     groundPlane.rotation.x = -Math.PI / 2;
-    groundPlane.position.y = -0.5;
+    groundPlane.position.y = 0.0;
     dropWorldGroup.add(groundPlane);
-
-    // Clean subtle ground grid (every 100 m)
-    const groundGrid = new THREE.GridHelper(30000, 15, 0x1b4332, 0x1b4332);
-    groundGrid.position.y = 0.5;
-    dropWorldGroup.add(groundGrid);
 
     // Single clean red bullseye target at the release origin (0, 0, 0) on the ground
     const originTarget = new THREE.Mesh(
-      new THREE.RingGeometry(8, 55, 32),
+      new THREE.RingGeometry(8, 65, 32),
       new THREE.MeshBasicMaterial({ color: 0xef4444, side: THREE.DoubleSide })
     );
     originTarget.rotation.x = -Math.PI / 2;
     originTarget.position.y = 1.0;
     dropWorldGroup.add(originTarget);
 
-    // Distance rings on the ground (50 m, 100 m, 200 m, 300 m, 500 m from release point)
-    [50, 100, 200, 300, 500].forEach((distM) => {
+    // Distance rings baked onto the 6 km ground (100 m, 300 m, 500 m, 1000 m, 2000 m, 3000 m from release point)
+    [100, 300, 500, 1000, 2000, 3000].forEach((distM) => {
+      const halfW = distM >= 1000 ? 2.5 : 1.4;
       const rRing = new THREE.Mesh(
-        new THREE.RingGeometry((distM - 1.2) * WORLD_SCALE, (distM + 1.2) * WORLD_SCALE, 64),
-        new THREE.MeshBasicMaterial({ color: distM === 100 || distM === 300 ? 0xdc2626 : 0xffffff, side: THREE.DoubleSide })
+        new THREE.RingGeometry((distM - halfW) * WORLD_SCALE, (distM + halfW) * WORLD_SCALE, 96),
+        new THREE.MeshBasicMaterial({
+          color: distM === 500 || distM === 1000 || distM === 3000 ? 0xdc2626 : 0xe2e8f0,
+          side: THREE.DoubleSide
+        })
       );
       rRing.rotation.x = -Math.PI / 2;
-      rRing.position.y = 1.0;
+      rRing.position.y = 1.2;
       dropWorldGroup.add(rRing);
     });
 
-    // Straight vertical reference line directly from the release point (0, Drop_Altitude, 0) down to the ground (0, 0, 0)
+    // Straight vertical reference line directly from the release point (0, Drop_Altitude, 0) down to the ground (0, 0, 0) (up to 1,000 m!)
     const releaseDropLineGeo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(0, 600 * WORLD_SCALE, 0)
+      new THREE.Vector3(0, 1000 * WORLD_SCALE, 0)
     ]);
     const releaseDropLine = new THREE.Line(
       releaseDropLineGeo,
@@ -614,11 +641,11 @@
     releaseDropLine.computeLineDistances();
     dropWorldGroup.add(releaseDropLine);
 
-    // Also add 3D cylinder segments along the vertical drop line so the vertical reference line is thick and clearly visible at any zoom!
+    // 3D cylinder segments along the vertical drop line up to 1,000 m (1 km)
     const verticalDropPillars = new THREE.Group();
-    const vDotGeo = new THREE.CylinderGeometry(10, 10, 45, 10);
+    const vDotGeo = new THREE.CylinderGeometry(12, 12, 55, 10);
     const vDotMat = new THREE.MeshBasicMaterial({ color: 0x1e293b });
-    for (let hM = 10; hM <= 600; hM += 20) {
+    for (let hM = 10; hM <= 1000; hM += 20) {
       const m = new THREE.Mesh(vDotGeo, vDotMat);
       m.position.set(0, hM * WORLD_SCALE, 0);
       verticalDropPillars.add(m);
@@ -1153,9 +1180,9 @@
       trailMarkersGroup.visible = !isTunnel;
       document.getElementById("traj-map-box").style.display = isTunnel ? "none" : "block";
 
-      // Switch between Dark Wind-Tunnel Enclosure and Crisp Sky Blue + Flat Matte Green Ground (Zero Fog!)
-      scene.background = new THREE.Color(isTunnel ? 0x05080f : 0x38bdf8);
-      scene.fog = null;
+      // Switch between Dark Wind-Tunnel Enclosure and Crisp Sky Blue + Subtle Distance Fog!
+      scene.background = new THREE.Color(isTunnel ? 0x05080f : 0x7dd3fc);
+      scene.fog = new THREE.FogExp2(isTunnel ? 0x05080f : 0x7dd3fc, isTunnel ? 0.00012 : 0.0000055);
 
       if (dropAlt !== null) simState.dropAltitudeInit = dropAlt;
       simState.paused = false;
@@ -1251,6 +1278,9 @@
     };
     document.getElementById("btn-drop-500").onclick = () => {
       slDropAlt.value = 500; slDropAlt.oninput(); setMode("free_drop", 500);
+    };
+    document.getElementById("btn-drop-1000").onclick = () => {
+      slDropAlt.value = 1000; slDropAlt.oninput(); setMode("free_drop", 1000);
     };
 
     function syncServosFromFlaps(dR, dL) {
