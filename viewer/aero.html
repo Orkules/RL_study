@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Simulation 2 — 3D Aerodynamic & Free-Drop Flight Dynamics Simulator</title>
+  <title>Delta-Wing Guided Flight Simulator</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
@@ -27,54 +27,57 @@
       background: var(--bg);
       color: var(--text);
       height: 100vh;
-      display: grid;
-      grid-template-rows: auto 1fr;
+      display: block;
       overflow: hidden;
-    }
-    header {
-      background: #0b1120;
-      border-bottom: 1px solid var(--border);
-      padding: 9px 16px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-    .brand { display: flex; align-items: center; gap: 10px; }
-    .badge {
-      background: rgba(56, 189, 248, 0.16);
-      color: var(--accent);
-      border: 1px solid rgba(56, 189, 248, 0.45);
-      font-size: 11px;
-      font-weight: 700;
-      padding: 3px 8px;
-      border-radius: 4px;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    h1 { font-size: 14.5px; font-weight: 600; }
-    .nav-links { display: flex; align-items: center; gap: 8px; }
-    .nav-link {
-      text-decoration: none;
-      color: var(--muted);
-      font-size: 12px;
-      padding: 5px 10px;
-      border-radius: 6px;
-      border: 1px solid #334155;
-      background: #1e293b;
-      font-weight: 600;
-    }
-    .nav-link:hover, .nav-link.active {
-      color: #fff;
-      border-color: var(--accent);
-      background: rgba(56, 189, 248, 0.2);
     }
     main {
       display: grid;
-      grid-template-columns: 1fr 440px;
-      height: 100%;
+      grid-template-columns: 215px 1fr 410px;
+      height: 100vh;
       overflow: hidden;
+    }
+    .left-sidebar {
+      background: #080f1e;
+      border-right: 1px solid var(--border);
+      padding: 10px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .green-stat-box {
+      background: rgba(10, 22, 40, 0.92);
+      border: 1px solid rgba(34, 197, 94, 0.28);
+      border-radius: 7px;
+      padding: 7px 10px;
+    }
+    .green-stat-label {
+      font-size: 10px;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .green-stat-val {
+      font-size: 17px;
+      font-weight: 800;
+      color: #4ade80;
+      text-shadow: 0 0 8px rgba(74, 222, 128, 0.48);
+      font-variant-numeric: tabular-nums;
+      margin-top: 1px;
+    }
+    .green-stat-sub {
+      font-size: 11px;
+      font-weight: 600;
+      color: #86efac;
+      font-variant-numeric: tabular-nums;
+    }
+    .cam-floating-bar {
+      position: absolute;
+      top: 10px;
+      left: 12px;
+      display: flex;
+      gap: 6px;
+      z-index: 12;
     }
     #viewport { position: relative; width: 100%; height: 100%; background: #05080f; overflow: hidden; }
     #canvas3d { width: 100%; height: 100%; display: block; }
@@ -247,71 +250,50 @@
   </style>
 </head>
 <body>
-  <header>
-    <div class="brand">
-      <span class="badge">Simulation 2 — 3D Aerodynamics</span>
-      <h1>300 g Delta-Wing Airframe: Wind-Tunnel & Free-Drop Flight Dynamics Simulator</h1>
-    </div>
-    <div class="nav-links">
-      <a class="nav-link" href="/" onclick="if(location.protocol==='file:'){location.href='index.html';return false;}">← Sim 1: CAD & Linkage</a>
-      <a class="nav-link active" href="/aero">Sim 2: 3D Aerodynamics & Free-Fall</a>
-      <button id="cam-follow" class="active">Follow Object</button>
-      <button id="cam-overview">Full Trajectory View</button>
-      <button id="cam-side">Side AoA View</button>
-      <button id="cam-rear">Rear Tail View</button>
-    </div>
-  </header>
-
   <main>
+    <!-- Dedicated Left Sidebar: Glowing Green Live Flight Values (Does Not Hide 3D View) -->
+    <aside class="left-sidebar">
+      <div class="green-stat-box">
+        <div class="green-stat-label">Airspeed</div>
+        <div class="green-stat-val" id="hud-speed">0.0 m/s</div>
+        <div class="green-stat-sub" id="hud-speed-kmh">0.0 km/h</div>
+      </div>
+      <div class="green-stat-box">
+        <div class="green-stat-label">Altitude</div>
+        <div class="green-stat-val" id="hud-alt">1000.0 m</div>
+        <div class="green-stat-sub" id="hud-vspeed">Vz: 0.0 m/s</div>
+      </div>
+      <div class="green-stat-box">
+        <div class="green-stat-label">G-Load &amp; L/D</div>
+        <div class="green-stat-val" id="hud-gload">0.00 G</div>
+        <div class="green-stat-sub" id="hud-ld">L/D: 0.00</div>
+      </div>
+      <div class="green-stat-box">
+        <div class="green-stat-label">AoA (α) / Slip (β)</div>
+        <div class="green-stat-val" id="hud-aoa">+0.0°</div>
+        <div class="green-stat-sub" id="hud-beta">β: 0.0°</div>
+      </div>
+      <div class="green-stat-box">
+        <div class="green-stat-label">Lift / Drag</div>
+        <div class="green-stat-val" id="hud-lift">0.00 N</div>
+        <div class="green-stat-sub" id="hud-drag">Drag: 0.00 N</div>
+      </div>
+      <div class="green-stat-box">
+        <div class="green-stat-label">Wing Flaps (R / L)</div>
+        <div class="green-stat-val" id="hud-flaps">0.0° / 0.0°</div>
+        <div class="green-stat-sub" id="hud-rates">p,q,r: 0, 0, 0 °/s</div>
+      </div>
+      <div id="hud-mode-title" style="display:none;"></div>
+    </aside>
+
     <div id="viewport">
       <canvas id="canvas3d"></canvas>
 
-      <!-- Live 3D Flight & Wind-Tunnel HUD -->
-      <div class="hud-overlay">
-        <div class="hud-card">
-          <div class="hud-title" id="hud-mode-title">MODE 1: 3D WIND-TUNNEL (COM FIXED, 3-DOF ROTATION)</div>
-          <div class="hud-grid">
-            <div>
-              <div class="hud-item-label">Airspeed</div>
-              <div class="hud-item-val" id="hud-speed">28.0 m/s</div>
-              <div class="hud-item-label" id="hud-speed-kmh">100.8 km/h</div>
-            </div>
-            <div>
-              <div class="hud-item-label">Altitude</div>
-              <div class="hud-item-val" id="hud-alt">0.0 m</div>
-              <div class="hud-item-label" id="hud-vspeed">Vz: 0.0 m/s</div>
-            </div>
-            <div>
-              <div class="hud-item-label">G-Load & L/D</div>
-              <div class="hud-item-val" id="hud-gload">0.00 G</div>
-              <div class="hud-item-label" id="hud-ld">L/D: 0.00</div>
-            </div>
-            <div>
-              <div class="hud-item-label">AoA (α) / Slip (β)</div>
-              <div class="hud-item-val" id="hud-aoa">+0.0°</div>
-              <div class="hud-item-label" id="hud-beta">β: 0.0°</div>
-            </div>
-            <div>
-              <div class="hud-item-label">Lift / Drag</div>
-              <div class="hud-item-val" id="hud-lift">0.00 N</div>
-              <div class="hud-item-label" id="hud-drag">Drag: 0.00 N</div>
-            </div>
-            <div>
-              <div class="hud-item-label">Wing Flaps (R/L)</div>
-              <div class="hud-item-val" id="hud-flaps">0.0° / 0.0°</div>
-              <div class="hud-item-label" id="hud-rates">p,q,r: 0, 0, 0 °/s</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="hud-legend">
-          <span><i class="dot" style="background:#facc15"></i>CoM (`91.3 mm` from tail)</span>
-          <span><i class="dot" style="background:#ec4899"></i>Wing/Fin CoP (`28.0 mm`, `63.3 mm` behind CoM)</span>
-          <span><i class="dot" style="background:#22c55e"></i>Total Lift Vector</span>
-          <span><i class="dot" style="background:#ef4444"></i>Drag Vector</span>
-          <span><i class="dot" style="background:#38bdf8"></i>Flap R/L Normal Forces</span>
-          <span><i class="dot" style="background:#a855f7"></i>Velocity Vector</span>
-        </div>
+      <div class="cam-floating-bar">
+        <button id="cam-follow">Follow Object</button>
+        <button id="cam-overview" class="active">Full Trajectory View</button>
+        <button id="cam-side">Side View</button>
+        <button id="cam-rear">Rear View</button>
       </div>
 
       <!-- Bottom-Left 3-Arrow X, Y, Z Coordinate Axis Gizmo -->
@@ -321,62 +303,52 @@
       </div>
 
       <!-- Bottom-Right Live 2D Side-Profile Trajectory Map (Altitude vs Horizontal Distance) -->
-      <div id="traj-map-box" style="display:none;position:absolute;bottom:16px;right:16px;background:rgba(15,23,42,0.94);border:1px solid #334155;border-radius:10px;padding:8px 12px;pointer-events:none;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-          <span style="font-size:10.5px;font-weight:700;color:#f8fafc;text-transform:uppercase;letter-spacing:0.05em;">Full Drop Trajectory Path (Altitude vs. Distance)</span>
-          <span id="traj-range-lbl" style="font-size:11px;font-weight:700;color:#fb923c;">Dist: 0.0 m</span>
+      <div id="traj-map-box" style="display:none;position:absolute;bottom:16px;right:16px;width:344px;background:rgba(15,23,42,0.94);border:1px solid #334155;border-radius:10px;padding:8px 12px;pointer-events:none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:6px;">
+          <span style="font-size:10px;font-weight:700;color:#f8fafc;text-transform:uppercase;letter-spacing:0.04em;white-space:nowrap;">Trajectory (Alt vs Dist)</span>
+          <span id="traj-range-lbl" style="font-size:10.5px;font-weight:700;color:#4ade80;white-space:nowrap;">Dist: 0.0 m</span>
         </div>
-        <canvas id="traj-map-canvas" width="320" height="165" style="display:block;border-radius:6px;border:1px solid #1e293b;"></canvas>
+        <canvas id="traj-map-canvas" width="320" height="165" style="width:100%;height:165px;display:block;border-radius:6px;border:1px solid #1e293b;"></canvas>
       </div>
     </div>
 
     <aside class="sidebar">
-      <!-- Simulation Mode Selector -->
+      <!-- Compact Simulation Controls (Play/Pause, Restart, Save Data, and Single Drop Height Input) -->
       <div class="box">
-        <h2>
-          <span>Simulation Mode</span>
-          <span id="conn-badge" style="color:#4ade80;font-size:10px;">Physics Active (100 Hz)</span>
-        </h2>
-        <div class="mode-tabs">
-          <button id="btn-mode-tunnel" class="active">1. Wind-Tunnel Mode</button>
-          <button id="btn-mode-drop">2. Free-Drop Glide Mode</button>
-        </div>
-        <div class="btn-row">
-          <button id="btn-kick" class="warn">Kick AoA (+25° Pitch / -18° Yaw)</button>
-          <button id="btn-reset">Reset Attitude / Drop</button>
-          <button id="btn-pause">Pause</button>
-          <button id="btn-save-flight" style="border-color:#22c55e;background:rgba(34,197,94,0.18);color:#bbf7d0;font-weight:700;">Save Flight Data</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+          <div style="display:flex;gap:5px;">
+            <button id="btn-pause" class="primary" style="padding:5px 10px;font-size:11.5px;">Pause</button>
+            <button id="btn-reset" style="padding:5px 10px;font-size:11.5px;">Restart</button>
+            <button id="btn-save-flight" style="padding:5px 10px;font-size:11.5px;border-color:#22c55e;background:rgba(34,197,94,0.18);color:#bbf7d0;font-weight:700;">Save Data</button>
+          </div>
+          <span id="conn-badge" style="color:#4ade80;font-size:10px;">100 Hz</span>
         </div>
         <div id="save-flight-status" style="margin-top:5px;font-size:11px;color:#86efac;display:none;"></div>
-      </div>
 
-      <!-- Mode-Specific Environment Controls -->
-      <div class="box" id="box-tunnel-controls">
-        <h2>Wind-Tunnel Airflow Controls (0 – 100 m/s / 360 km/h)</h2>
-        <div class="slider-row">
-          <span>Freestream Airspeed</span>
-          <input type="range" id="sl-airspeed" min="0" max="100" step="0.5" value="28" />
-          <strong id="val-airspeed" style="text-align:right">28.0 m/s</strong>
-        </div>
-        <div class="btn-row">
-          <button class="spd-preset" data-spd="15">15 m/s (54 km/h)</button>
-          <button class="spd-preset" data-spd="35">35 m/s (126 km/h)</button>
-          <button class="spd-preset" data-spd="60">60 m/s (216 km/h)</button>
-          <button class="spd-preset" data-spd="90">90 m/s (324 km/h)</button>
-        </div>
-      </div>
-
-      <div class="box" id="box-drop-controls" style="display:none;">
-        <h2>1,000 m Free-Drop & RL Autopilot</h2>
-        <div class="btn-row" style="margin-bottom:8px;">
-          <button id="btn-drop-200">Drop 200 m</button>
-          <button id="btn-drop-500">Drop 500 m</button>
-          <button id="btn-drop-1000" class="primary">Drop 1000 m (1 km)</button>
+        <div style="display:grid;grid-template-columns:92px 1fr 72px;align-items:center;gap:8px;margin-top:8px;font-size:12px;">
+          <span>Drop Height (m)</span>
+          <input type="range" id="sl-drop-alt" min="50" max="2000" step="10" value="1000" />
+          <input type="number" id="in-drop-alt" min="50" max="5000" step="10" value="1000" style="width:72px;background:#091326;color:#4ade80;border:1px solid #334155;border-radius:5px;padding:3px 6px;font-weight:700;font-size:12px;text-align:right;" />
         </div>
         <div style="display:none;">
-          <input type="range" id="sl-drop-alt" min="50" max="1000" step="10" value="1000" />
+          <button id="btn-mode-tunnel"></button>
+          <button id="btn-mode-drop"></button>
+          <button id="btn-kick"></button>
+          <button id="btn-drop-200"></button>
+          <button id="btn-drop-500"></button>
+          <button id="btn-drop-1000"></button>
           <strong id="val-drop-alt">1000 m</strong>
         </div>
+      </div>
+
+      <!-- Hidden Wind-Tunnel Legacy Controls -->
+      <div class="box" id="box-tunnel-controls" style="display:none;">
+        <input type="range" id="sl-airspeed" min="0" max="100" step="0.5" value="28" />
+        <strong id="val-airspeed">28.0 m/s</strong>
+      </div>
+
+      <div class="box" id="box-drop-controls">
+        <h2>RL Autopilot &amp; Target Selection</h2>
 
         <div class="btn-row" id="rl-stage-buttons">
           <button class="rl-btn active" data-rl="manual">Manual</button>
@@ -1858,13 +1830,25 @@
       };
     });
 
+    const inDropAlt = document.getElementById("in-drop-alt");
     slDropAlt.oninput = () => {
       simState.dropAltitudeInit = Number(slDropAlt.value);
+      if (inDropAlt) inDropAlt.value = simState.dropAltitudeInit;
       document.getElementById("val-drop-alt").textContent = `${simState.dropAltitudeInit.toFixed(0)} m`;
       if (simState.mode === "free_drop") {
         setMode("free_drop", simState.dropAltitudeInit);
       }
     };
+    if (inDropAlt) {
+      inDropAlt.onchange = () => {
+        const v = Math.max(50, Math.min(5000, Number(inDropAlt.value) || 1000));
+        inDropAlt.value = v;
+        slDropAlt.value = Math.min(2000, v);
+        simState.dropAltitudeInit = v;
+        document.getElementById("val-drop-alt").textContent = `${v.toFixed(0)} m`;
+        setMode("free_drop", v);
+      };
+    }
     document.getElementById("btn-drop-200").onclick = () => {
       slDropAlt.value = 200; slDropAlt.oninput(); setMode("free_drop", 200);
     };
@@ -2577,6 +2561,12 @@
         axesCtx.fillText(a.label, lx, ly);
       }
     }
+    // Start directly in Free-Drop Glide Simulation (not Wind-Tunnel mode)
+    activeRlStage = "gps_1_static";
+    document.querySelectorAll(".rl-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.rl === activeRlStage);
+    });
+    setMode("free_drop", 1000);
     animate();
   </script>
 </body>
