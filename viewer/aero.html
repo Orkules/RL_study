@@ -32,43 +32,45 @@
     }
     main {
       display: grid;
-      grid-template-columns: 215px 1fr 410px;
+      grid-template-columns: 1fr 370px;
       height: 100vh;
       overflow: hidden;
     }
     .left-sidebar {
-      background: #080f1e;
-      border-right: 1px solid var(--border);
-      padding: 10px;
-      overflow-y: auto;
+      position: absolute;
+      top: 46px;
+      left: 12px;
+      z-index: 10;
+      pointer-events: none;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 5px;
     }
     .green-stat-box {
-      background: rgba(10, 22, 40, 0.92);
-      border: 1px solid rgba(34, 197, 94, 0.28);
-      border-radius: 7px;
-      padding: 7px 10px;
+      background: rgba(6, 12, 24, 0.42);
+      border-left: 2px solid #4ade80;
+      border-radius: 4px;
+      padding: 3px 8px;
     }
     .green-stat-label {
-      font-size: 10px;
-      color: #94a3b8;
+      font-size: 9.5px;
+      color: #bbf7d0;
       text-transform: uppercase;
       letter-spacing: 0.05em;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
     }
     .green-stat-val {
-      font-size: 17px;
+      font-size: 15px;
       font-weight: 800;
       color: #4ade80;
-      text-shadow: 0 0 8px rgba(74, 222, 128, 0.48);
+      text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95), 0 0 8px rgba(74, 222, 128, 0.55);
       font-variant-numeric: tabular-nums;
-      margin-top: 1px;
     }
     .green-stat-sub {
-      font-size: 11px;
+      font-size: 10.5px;
       font-weight: 600;
       color: #86efac;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
       font-variant-numeric: tabular-nums;
     }
     .cam-floating-bar {
@@ -251,41 +253,6 @@
 </head>
 <body>
   <main>
-    <!-- Dedicated Left Sidebar: Glowing Green Live Flight Values (Does Not Hide 3D View) -->
-    <aside class="left-sidebar">
-      <div class="green-stat-box">
-        <div class="green-stat-label">Airspeed</div>
-        <div class="green-stat-val" id="hud-speed">0.0 m/s</div>
-        <div class="green-stat-sub" id="hud-speed-kmh">0.0 km/h</div>
-      </div>
-      <div class="green-stat-box">
-        <div class="green-stat-label">Altitude</div>
-        <div class="green-stat-val" id="hud-alt">1000.0 m</div>
-        <div class="green-stat-sub" id="hud-vspeed">Vz: 0.0 m/s</div>
-      </div>
-      <div class="green-stat-box">
-        <div class="green-stat-label">G-Load &amp; L/D</div>
-        <div class="green-stat-val" id="hud-gload">0.00 G</div>
-        <div class="green-stat-sub" id="hud-ld">L/D: 0.00</div>
-      </div>
-      <div class="green-stat-box">
-        <div class="green-stat-label">AoA (α) / Slip (β)</div>
-        <div class="green-stat-val" id="hud-aoa">+0.0°</div>
-        <div class="green-stat-sub" id="hud-beta">β: 0.0°</div>
-      </div>
-      <div class="green-stat-box">
-        <div class="green-stat-label">Lift / Drag</div>
-        <div class="green-stat-val" id="hud-lift">0.00 N</div>
-        <div class="green-stat-sub" id="hud-drag">Drag: 0.00 N</div>
-      </div>
-      <div class="green-stat-box">
-        <div class="green-stat-label">Wing Flaps (R / L)</div>
-        <div class="green-stat-val" id="hud-flaps">0.0° / 0.0°</div>
-        <div class="green-stat-sub" id="hud-rates">p,q,r: 0, 0, 0 °/s</div>
-      </div>
-      <div id="hud-mode-title" style="display:none;"></div>
-    </aside>
-
     <div id="viewport">
       <canvas id="canvas3d"></canvas>
 
@@ -294,6 +261,41 @@
         <button id="cam-overview" class="active">Full Trajectory View</button>
         <button id="cam-side">Side View</button>
         <button id="cam-rear">Rear View</button>
+      </div>
+
+      <!-- Floating Left Telemetry Overlay: Glowing Green Numbers Over the 3D Map (Does Not Hide Map) -->
+      <div class="left-sidebar">
+        <div class="green-stat-box">
+          <div class="green-stat-label">Airspeed</div>
+          <div class="green-stat-val" id="hud-speed">0.0 m/s</div>
+          <div class="green-stat-sub" id="hud-speed-kmh">0.0 km/h</div>
+        </div>
+        <div class="green-stat-box">
+          <div class="green-stat-label">Altitude</div>
+          <div class="green-stat-val" id="hud-alt">1000.0 m</div>
+          <div class="green-stat-sub" id="hud-vspeed">Vz: 0.0 m/s</div>
+        </div>
+        <div class="green-stat-box">
+          <div class="green-stat-label">Roll / Pitch / Yaw</div>
+          <div class="green-stat-val" id="t-euler">0° / 0° / 0°</div>
+          <div class="green-stat-sub" id="hud-rates">p,q,r: 0, 0, 0 °/s</div>
+        </div>
+        <div class="green-stat-box">
+          <div class="green-stat-label">G-Load &amp; L/D</div>
+          <div class="green-stat-val" id="hud-gload">0.00 G</div>
+          <div class="green-stat-sub" id="hud-ld">L/D: 0.00</div>
+        </div>
+        <div class="green-stat-box">
+          <div class="green-stat-label">AoA (α) / Slip (β)</div>
+          <div class="green-stat-val" id="hud-aoa">+0.0°</div>
+          <div class="green-stat-sub" id="hud-beta">β: 0.0°</div>
+        </div>
+        <div class="green-stat-box">
+          <div class="green-stat-label">Lift / Drag &amp; Flaps</div>
+          <div class="green-stat-val" id="hud-flaps">0.0° / 0.0°</div>
+          <div class="green-stat-sub"><span id="hud-lift">0.00 N</span> | <span id="hud-drag">Drag: 0.00 N</span></div>
+        </div>
+        <div id="hud-mode-title" style="display:none;"></div>
       </div>
 
       <!-- Bottom-Left 3-Arrow X, Y, Z Coordinate Axis Gizmo -->
@@ -348,18 +350,21 @@
       </div>
 
       <div class="box" id="box-drop-controls">
-        <h2>RL Autopilot &amp; Target Selection</h2>
-
-        <div class="btn-row" id="rl-stage-buttons">
-          <button class="rl-btn active" data-rl="manual">Manual</button>
-          <button class="rl-btn" data-rl="stage_0_untrained">Stage 0 (6.9m)</button>
-          <button class="rl-btn" data-rl="stage_2_mid">Stage 2 (1125m)</button>
-          <button class="rl-btn" data-rl="stage_4_master">Max Distance RL (1325m)</button>
-          <button class="rl-btn" data-rl="gps_1_static" style="border-color:#22c55e;">GPS 1: Multi-Angle/Speed (&lt;3m)</button>
-          <button class="rl-btn" data-rl="gps_2_linear" style="border-color:#38bdf8;">GPS 2: Linear Moving</button>
-          <button class="rl-btn" data-rl="gps_3_aggressive" style="border-color:#f97316;">GPS 3: Curved Moving Target</button>
-          <button class="rl-btn" data-rl="gps_4_car_pursuit" style="border-color:#ef4444;background:rgba(239,68,68,0.18);">Adversarial Car Duel (50-300 km/h)</button>
+        <h2>Control Mode &amp; AI Model</h2>
+        <div style="display:grid;grid-template-columns:auto auto 1fr;gap:6px;align-items:center;">
+          <button id="btn-ctrl-manual" style="padding:6px 12px;">Manual</button>
+          <button id="btn-ctrl-auto" class="active" style="padding:6px 12px;">Auto (AI)</button>
+          <select id="sel-rl-model" style="width:100%;background:#091326;color:#f8fafc;border:1px solid #38bdf8;border-radius:6px;padding:6px 8px;font-size:12px;font-weight:600;cursor:pointer;">
+            <option value="gps_1_static" selected>GPS 1: Target Homing (&lt;3m)</option>
+            <option value="gps_2_linear">GPS 2: Linear Crossing Target</option>
+            <option value="gps_3_aggressive">GPS 3: Curved Moving Target</option>
+            <option value="gps_4_car_pursuit">Adversarial Car Duel (50-300 km/h)</option>
+            <option value="stage_4_master">Max Distance Glide (1325m)</option>
+            <option value="stage_2_mid">Mid Training Glide (1125m)</option>
+            <option value="stage_0_untrained">Untrained Vertical Drop (6.9m)</option>
+          </select>
         </div>
+
         <div id="car-speed-tier-row" class="btn-row" style="margin-top:6px;display:none;">
           <button class="car-spd-btn active" data-kmh="50">50 km/h</button>
           <button class="car-spd-btn" data-kmh="80">80 km/h</button>
@@ -370,21 +375,19 @@
           <button class="car-spd-btn" data-kmh="250">250 km/h</button>
           <button class="car-spd-btn" data-kmh="300">300 km/h</button>
         </div>
-        <div id="rl-status-line" style="margin-top:7px;font-size:11.5px;color:#93c5fd;">
-          Controller: <strong>Manual</strong> (Click any RL or GPS stage above, or click the X-Y map below!)
+        <div id="rl-status-line" style="display:none;"></div>
+        <div style="display:none;">
+          <button id="btn-random-midair"></button>
+          <button id="btn-flip-mirror"></button>
         </div>
 
         <hr style="border:none;border-top:1px solid #1e293b;margin:10px 0;" />
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:4px;">
-          <h2 style="margin:0;">360° Centered X-Y Radar (Origin (0,0) in Center)</h2>
-          <div style="display:flex;gap:4px;">
-            <button id="btn-random-midair" style="padding:3px 7px;font-size:10.5px;border-color:#4ade80;color:#bbf7d0;">Random Angle+Speed+Target</button>
-            <button id="btn-flip-mirror" style="padding:3px 7px;font-size:10.5px;border-color:#f97316;color:#fed7aa;">Flip Mirror (-X,-Y)</button>
-          </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <h2 style="margin:0;">360° Centered X-Y Target Map (Click to Set Target)</h2>
         </div>
         <canvas id="xy-target-pad" width="320" height="320" style="width:100%;height:280px;background:#091326;border:1px solid #334155;border-radius:8px;cursor:crosshair;display:block;"></canvas>
-        <div id="gps-live-readout" style="margin-top:6px;font-size:11.5px;color:#facc15;font-family:monospace;text-align:center;">
-          Click anywhere 360° around the center (0,0) (or click Flip Target to Mirror) to watch it roll & fly inverted!
+        <div id="gps-live-readout" style="margin-top:6px;font-size:11.5px;color:#4ade80;font-family:monospace;text-align:center;">
+          Click anywhere on the X-Y map to place the target.
         </div>
       </div>
 
@@ -430,13 +433,12 @@
         </div>
       </div>
 
-      <!-- Compact Live Telemetry -->
-      <div class="box">
+      <!-- Hidden Duplicate Bottom-Right Telemetry (Moved to Floating Left Bar) -->
+      <div class="box" style="display:none;">
         <h2>Live 6-DOF Flight Telemetry</h2>
         <div class="telem-grid">
           <div class="telem-row"><span>AoA (α) / Sideslip (β)</span><strong><span id="t-alpha">0.0°</span> / <span id="t-beta">0.0°</span></strong></div>
           <div class="telem-row"><span>Lift / Drag / L/D</span><strong><span id="t-lift">0N</span> / <span id="t-drag">0N</span> (<span id="t-ld">0</span>)</strong></div>
-          <div class="telem-row"><span>Roll / Pitch / Yaw</span><strong id="t-euler">0° / 0° / 0°</strong></div>
           <div class="telem-row"><span>Gyro (p, q, r)</span><strong id="t-gyro">0, 0, 0 rad/s</strong></div>
         </div>
         <div style="display:none;">
@@ -997,15 +999,15 @@
     }
 
     function ensureGpsPolicyActive() {
+      const btnMan = document.getElementById("btn-ctrl-manual");
+      const btnAut = document.getElementById("btn-ctrl-auto");
+      const selMod = document.getElementById("sel-rl-model");
       if (!activeRlStage.startsWith("gps_")) {
         activeRlStage = "gps_1_static";
-        document.querySelectorAll(".rl-btn").forEach((b) => {
-          b.classList.toggle("active", b.dataset.rl === activeRlStage);
-        });
-        const m = GLIDE_RL_MODELS[activeRlStage];
-        document.getElementById("rl-status-line").innerHTML =
-          `Active GPS Policy: <strong>${m.stage_label}</strong> (Interactive Real-Time Click Tracking)`;
+        if (selMod) selMod.value = "gps_1_static";
       }
+      if (btnMan) btnMan.classList.remove("active");
+      if (btnAut) btnAut.classList.add("active");
       gpsState.active = true;
       gpsTargetGroup.visible = simState.mode === "free_drop";
       gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
@@ -1855,27 +1857,34 @@
     document.getElementById("btn-drop-500").onclick = () => {
       slDropAlt.value = 500; slDropAlt.oninput(); setMode("free_drop", 500);
     };
-    document.querySelectorAll(".rl-btn").forEach((btn) => {
-      btn.onclick = () => {
-        document.querySelectorAll(".rl-btn").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        activeRlStage = btn.dataset.rl;
-        const statusEl = document.getElementById("rl-status-line");
-        if (activeRlStage === "manual") {
-          statusEl.innerHTML = `Controller: <strong>Manual Sliders</strong>`;
-        } else {
-          const m = GLIDE_RL_MODELS[activeRlStage];
-          if (activeRlStage.startsWith("gps_")) {
-            statusEl.innerHTML = `Active GPS Policy: <strong>${m.stage_label}</strong> (1000m Drop Miss Error: <strong>${m.final_target_error_m} m</strong>, Random Mean Miss: <strong>${m.mean_random_error_m} m</strong>, Max Bank: <strong>${m.max_bank_deg}°</strong>)`;
-          } else {
-            statusEl.innerHTML = `Active RL Policy: <strong>${m.stage_label}</strong> (1000m Drop Reach: <strong>${m.final_xy_distance_m} m</strong>, Peak Speed: <strong>${m.max_airspeed_ms} m/s</strong>, Max Pitch: <strong>${m.max_pitch_deg}°</strong>)`;
-          }
-          slDropAlt.value = 1000;
-          slDropAlt.oninput();
-        }
+    const btnCtrlManual = document.getElementById("btn-ctrl-manual");
+    const btnCtrlAuto   = document.getElementById("btn-ctrl-auto");
+    const selRlModel    = document.getElementById("sel-rl-model");
+
+    if (btnCtrlManual) {
+      btnCtrlManual.onclick = () => {
+        btnCtrlManual.classList.add("active");
+        if (btnCtrlAuto) btnCtrlAuto.classList.remove("active");
+        activeRlStage = "manual";
         setMode("free_drop", simState.dropAltitudeInit);
       };
-    });
+    }
+    if (btnCtrlAuto) {
+      btnCtrlAuto.onclick = () => {
+        btnCtrlAuto.classList.add("active");
+        if (btnCtrlManual) btnCtrlManual.classList.remove("active");
+        activeRlStage = selRlModel ? selRlModel.value : "gps_1_static";
+        setMode("free_drop", simState.dropAltitudeInit);
+      };
+    }
+    if (selRlModel) {
+      selRlModel.onchange = () => {
+        if (btnCtrlAuto) btnCtrlAuto.classList.add("active");
+        if (btnCtrlManual) btnCtrlManual.classList.remove("active");
+        activeRlStage = selRlModel.value;
+        setMode("free_drop", simState.dropAltitudeInit);
+      };
+    }
 
     document.getElementById("btn-drop-1000").onclick = () => {
       slDropAlt.value = 1000; slDropAlt.oninput(); setMode("free_drop", 1000);
@@ -1928,12 +1937,10 @@
         btn.classList.add("active");
         gpsState.carMaxSpeedKmh = Number(btn.dataset.kmh);
         activeRlStage = "gps_4_car_pursuit";
-        document.querySelectorAll(".rl-btn").forEach((b) => {
-          b.classList.toggle("active", b.dataset.rl === activeRlStage);
-        });
-        document.getElementById("rl-status-line").innerHTML =
-          `Active Duel: <strong>Missile vs Evasive Car (${gpsState.carMaxSpeedKmh} km/h Top Speed)</strong>`;
-        setMode("free_drop", 1000);
+        if (selRlModel) selRlModel.value = "gps_4_car_pursuit";
+        if (btnCtrlAuto) btnCtrlAuto.classList.add("active");
+        if (btnCtrlManual) btnCtrlManual.classList.remove("active");
+        setMode("free_drop", simState.dropAltitudeInit);
       };
     });
 
@@ -2029,14 +2036,17 @@
       const toPx = (eastM) => cx + (eastM / XY_PAD_MAX_R) * (W * 0.5);
       const toPy = (northM) => cy - (northM / XY_PAD_MAX_R) * (H * 0.5);
 
-      // Concentric 360-degree range rings around Center (0, 0): 400 m, 800 m, 1200 m
+      // Concentric 360-degree range rings around Center (0, 0): 300 m, 600 m, 900 m, 1200 m with clear labels
       xyPadCtx.strokeStyle = "#1e293b";
       xyPadCtx.lineWidth = 1;
-      [400, 800, 1200].forEach((rM) => {
+      xyPadCtx.fillStyle = "#64748b";
+      xyPadCtx.font = "9.5px monospace";
+      [300, 600, 900, 1200].forEach((rM) => {
         const rPx = (rM / XY_PAD_MAX_R) * (W * 0.5);
         xyPadCtx.beginPath();
         xyPadCtx.arc(cx, cy, rPx, 0, Math.PI * 2);
         xyPadCtx.stroke();
+        xyPadCtx.fillText(`${rM}m`, cx + 3, cy - rPx + 10);
       });
 
       // Center Crosshairs passing through Origin (0, 0)
@@ -2082,6 +2092,17 @@
           xyPadCtx.stroke();
         }
         const tx = toPx(gpsState.posE), ty = toPy(gpsState.posN);
+        const gx0 = toPx(simState.posE), gy0 = toPy(simState.posN);
+        // Draw live dashed distance line from glider (X,Y) to target (X,Y)
+        xyPadCtx.save();
+        xyPadCtx.setLineDash([4, 4]);
+        xyPadCtx.strokeStyle = "rgba(74, 222, 128, 0.55)";
+        xyPadCtx.lineWidth = 1.4;
+        xyPadCtx.beginPath();
+        xyPadCtx.moveTo(gx0, gy0);
+        xyPadCtx.lineTo(tx, ty);
+        xyPadCtx.stroke();
+        xyPadCtx.restore();
         xyPadCtx.strokeStyle = "#facc15";
         xyPadCtx.lineWidth = 2.4;
         xyPadCtx.beginPath();
