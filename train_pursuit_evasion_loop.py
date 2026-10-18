@@ -22,11 +22,9 @@ SPEED_TIERS_KMH = [50.0, 80.0, 110.0, 140.0, 175.0, 210.0, 250.0, 300.0]
 
 def high_speed_dive_pursuit(obs: np.ndarray) -> np.ndarray:
     """
-    Universal 360-Degree All-Range + Terminal 3D Dive Car Hunter (24D INAV + Relative Target Obs):
+    Universal 360-Degree All-Range + Terminal 3D Dive Car Hunter (24D INAV + Full 3D Relative Target Obs):
     """
-    dist_m = max(10.0, float(obs[3]) * 1000.0)
-    lead_eff = 0.65 if dist_m < 260.0 else 0.15
-    return omni_3d_guidance(obs, lead_gain=lead_eff)
+    return omni_3d_guidance(obs, lead_gain=1.0)
 
 
 def evasive_car_heuristic(car_obs: np.ndarray) -> np.ndarray:

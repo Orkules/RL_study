@@ -131,20 +131,16 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         dist_3d = max(1.0, float(np.linalg.norm(d_ned)))
         dir_body = (self.R_wb.T @ d_ned) / dist_3d
         v_body = self.R_wb.T @ self.vel_ned
-        s_roll, c_roll, s_pitch, c_pitch, s_yaw, _ = compute_inav_circular_attitude(self.R_wb)
+        s_roll, c_roll, s_pitch, c_pitch, s_yaw, c_yaw = compute_inav_circular_attitude(self.R_wb)
 
-        hist_features: list[float] = []
         n_hist = len(self.target_history_ned)
-        for k_back, norm_scale in [(5, 6.25), (10, 12.5), (15, 18.75), (20, 25.0)]:
-            idx_h = max(0, n_hist - 1 - k_back)
-            past_ned = self.target_history_ned[idx_h] if n_hist > 0 else cur_car_ned
-            delta_ned = cur_car_ned - past_ned
-            delta_body = self.R_wb.T @ delta_ned
-            hist_features.append(float(delta_body[0] / norm_scale))
-            hist_features.append(float(delta_body[1] / norm_scale))
-
         past_1 = self.target_history_ned[max(0, n_hist - 2)] if n_hist > 1 else cur_car_ned
+        past_5 = self.target_history_ned[max(0, n_hist - 6)] if n_hist > 5 else past_1
+        past_10 = self.target_history_ned[max(0, n_hist - 11)] if n_hist > 10 else past_5
+
         step_delta_body = self.R_wb.T @ ((cur_car_ned - past_1) / self.control_dt)
+        d025_body = self.R_wb.T @ (cur_car_ned - past_5)
+        d050_body = self.R_wb.T @ (cur_car_ned - past_10)
 
         return np.array(
             [
@@ -162,9 +158,16 @@ class PursuitEvasionAdversarialEnv(gym.Env):
                 s_pitch,
                 c_pitch,
                 s_yaw,
+                c_yaw,
                 float(step_delta_body[0]) / 25.0,
                 float(step_delta_body[1]) / 25.0,
-                *hist_features,
+                float(step_delta_body[2]) / 25.0,
+                float(d025_body[0]) / 6.25,
+                float(d025_body[1]) / 6.25,
+                float(d025_body[2]) / 6.25,
+                float(d050_body[0]) / 12.5,
+                float(d050_body[1]) / 12.5,
+                float(d050_body[2]) / 12.5,
             ],
             dtype=np.float32,
         )

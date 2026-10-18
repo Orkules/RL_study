@@ -136,20 +136,15 @@ class GlideGpsTargetEnv(gym.Env):
         # Circularly normalized INAV attitude (sin_roll, cos_roll, sin_pitch, cos_pitch, sin_yaw, cos_yaw)
         s_roll, c_roll, s_pitch, c_pitch, s_yaw, c_yaw = compute_inav_circular_attitude(self.R_wb)
 
-        # Past Target Positions (5, 10, 15, 20 steps ago = 0.25s, 0.50s, 0.75s, 1.00s ago)
-        # Displacements relative to current target_ned (target(now) - target(past)) in body frame (unclipped!)
-        hist_features: List[float] = []
+        # Past Target Positions (5 and 10 steps ago = 0.25s and 0.50s ago) in all 3 body axes (x_b, y_b, z_b)
         n_hist = len(self.target_history_ned)
-        for k_back, norm_scale in [(5, 6.25), (10, 12.5), (15, 18.75), (20, 25.0)]:
-            idx_h = max(0, n_hist - 1 - k_back)
-            past_ned = self.target_history_ned[idx_h] if n_hist > 0 else self.target_ned
-            delta_ned = self.target_ned - past_ned
-            delta_body = self.R_wb.T @ delta_ned
-            hist_features.append(float(delta_body[0] / norm_scale))
-            hist_features.append(float(delta_body[1] / norm_scale))
-
         past_1 = self.target_history_ned[max(0, n_hist - 2)] if n_hist > 1 else self.target_ned
+        past_5 = self.target_history_ned[max(0, n_hist - 6)] if n_hist > 5 else past_1
+        past_10 = self.target_history_ned[max(0, n_hist - 11)] if n_hist > 10 else past_5
+
         step_delta_body = self.R_wb.T @ ((self.target_ned - past_1) / self.control_dt)
+        d025_body = self.R_wb.T @ (self.target_ned - past_5)
+        d050_body = self.R_wb.T @ (self.target_ned - past_10)
 
         return np.array(
             [
@@ -167,9 +162,16 @@ class GlideGpsTargetEnv(gym.Env):
                 s_pitch,
                 c_pitch,
                 s_yaw,
+                c_yaw,
                 float(step_delta_body[0]) / 25.0,
                 float(step_delta_body[1]) / 25.0,
-                *hist_features,
+                float(step_delta_body[2]) / 25.0,
+                float(d025_body[0]) / 6.25,
+                float(d025_body[1]) / 6.25,
+                float(d025_body[2]) / 6.25,
+                float(d050_body[0]) / 12.5,
+                float(d050_body[1]) / 12.5,
+                float(d050_body[2]) / 12.5,
             ],
             dtype=np.float32,
         )
