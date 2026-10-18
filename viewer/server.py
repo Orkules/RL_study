@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 from typing import Dict
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from datetime import datetime, timezone
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import numpy as np
@@ -73,6 +74,39 @@ async def get_training_progress() -> JSONResponse:
         return JSONResponse({"error": "Training artifacts not found."}, status_code=404)
     data = json.loads(progress_file.read_text(encoding="utf-8"))
     return JSONResponse(data)
+
+
+@app.post("/api/save-flight")
+async def save_flight_recording(request: Request) -> JSONResponse:
+    payload = await request.json()
+    saved_dir = ARTIFACTS_DIR / "saved_flights"
+    saved_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stage = str(payload.get("stage_id", "unknown")).replace("/", "_")
+    filename = f"flight_{ts}_{stage}.json"
+    filepath = saved_dir / filename
+    latest_path = saved_dir / "latest_saved_flight.json"
+    text = json.dumps(payload, indent=2)
+    filepath.write_text(text, encoding="utf-8")
+    latest_path.write_text(text, encoding="utf-8")
+    return JSONResponse(
+        {
+            "status": "ok",
+            "filename": filename,
+            "path": str(filepath),
+            "num_steps": len(payload.get("steps", [])),
+            "final_error_m": payload.get("summary", {}).get("final_error_m"),
+        }
+    )
+
+
+@app.get("/api/saved-flights")
+async def list_saved_flights() -> JSONResponse:
+    saved_dir = ARTIFACTS_DIR / "saved_flights"
+    if not saved_dir.exists():
+        return JSONResponse({"flights": []})
+    files = sorted([p.name for p in saved_dir.glob("flight_*.json")], reverse=True)
+    return JSONResponse({"flights": files, "latest": "latest_saved_flight.json" if (saved_dir / "latest_saved_flight.json").exists() else None})
 
 
 @app.websocket("/ws/sim")

@@ -345,7 +345,9 @@
           <button id="btn-kick" class="warn">Kick AoA (+25° Pitch / -18° Yaw)</button>
           <button id="btn-reset">Reset Attitude / Drop</button>
           <button id="btn-pause">Pause</button>
+          <button id="btn-save-flight" style="border-color:#22c55e;background:rgba(34,197,94,0.18);color:#bbf7d0;font-weight:700;">Save Flight Data</button>
         </div>
+        <div id="save-flight-status" style="margin-top:5px;font-size:11px;color:#86efac;display:none;"></div>
       </div>
 
       <!-- Mode-Specific Environment Controls -->
@@ -1589,6 +1591,37 @@
           document.getElementById("val-pitch-mix").textContent = `${pitchCmdDeg >= 0 ? "+" : ""}${pitchCmdDeg.toFixed(1)}°`;
           document.getElementById("val-roll-mix").textContent  = `${rollCmdDeg >= 0 ? "+" : ""}${rollCmdDeg.toFixed(1)}°`;
           syncServosFromFlaps(pitchCmdDeg + rollCmdDeg, pitchCmdDeg - rollCmdDeg);
+
+          // Record telemetry step for Save Flight Data analysis:
+          if (!simState.recordedSteps) simState.recordedSteps = [];
+          const dist2dNow = Math.hypot(gpsState.posN - simState.posN, gpsState.posE - simState.posE);
+          simState.recordedSteps.push({
+            step: simState.recordedSteps.length,
+            time_s: Number((simState.recordedSteps.length * 0.05).toFixed(2)),
+            posN: Number(simState.posN.toFixed(2)),
+            posE: Number(simState.posE.toFixed(2)),
+            altM: Number(simState.altM.toFixed(2)),
+            velN: Number(simState.velN.toFixed(2)),
+            velE: Number(simState.velE.toFixed(2)),
+            velD: Number(simState.velD.toFixed(2)),
+            airspeed_ms: Number(V.toFixed(2)),
+            roll_deg: Number((simState.roll * 180 / Math.PI).toFixed(2)),
+            pitch_deg: Number((simState.pitch * 180 / Math.PI).toFixed(2)),
+            yaw_deg: Number((simState.yaw * 180 / Math.PI).toFixed(2)),
+            p_rads: Number(simState.p.toFixed(3)),
+            q_rads: Number(simState.q.toFixed(3)),
+            r_rads: Number(simState.r.toFixed(3)),
+            act_pitch: Number(act[0].toFixed(4)),
+            act_roll: Number(act[1].toFixed(4)),
+            cmd_delta_r_deg: Number(simState.cmdDeltaR.toFixed(2)),
+            cmd_delta_l_deg: Number(simState.cmdDeltaL.toFixed(2)),
+            targetN: Number(gpsState.posN.toFixed(2)),
+            targetE: Number(gpsState.posE.toFixed(2)),
+            targetVelN: Number(gpsState.velN.toFixed(2)),
+            targetVelE: Number(gpsState.velE.toFixed(2)),
+            dist_2d_m: Number(dist2dNow.toFixed(2)),
+            obs: obsVec.map(v => Number(v.toFixed(4)))
+          });
         }
         rlSubstepCounter++;
       }
@@ -1693,6 +1726,7 @@
 
       // Completely wipe previous trajectory trail buffer and spheres
       simState.trail = [];
+      simState.recordedSteps = [];
       trailPositions.fill(0);
       trailGeo.attributes.position.needsUpdate = true;
       trailGeo.setDrawRange(0, 0);
@@ -1762,6 +1796,53 @@
       btnPause.textContent = simState.paused ? "Resume" : "Pause";
       btnPause.classList.toggle("active", simState.paused);
       sendWs({ type: "set_paused", paused: simState.paused });
+    };
+
+    document.getElementById("btn-save-flight").onclick = async () => {
+      const steps = simState.recordedSteps || [];
+      const statusEl = document.getElementById("save-flight-status");
+      statusEl.style.display = "block";
+      if (steps.length === 0) {
+        statusEl.textContent = "No flight steps recorded yet. Run a Free-Drop flight first, then click Save Flight Data.";
+        return;
+      }
+      let totalRollRad = 0.0;
+      let minErr = 1e9;
+      let maxV = 0.0;
+      for (let i = 0; i < steps.length; i++) {
+        totalRollRad += Math.abs(steps[i].p_rads) * 0.05;
+        if (steps[i].dist_2d_m < minErr) minErr = steps[i].dist_2d_m;
+        if (steps[i].airspeed_ms > maxV) maxV = steps[i].airspeed_ms;
+      }
+      const lastStep = steps[steps.length - 1];
+      const payload = {
+        stage_id: activeRlStage,
+        mode: gpsState.mode,
+        car_max_speed_kmh: gpsState.carMaxSpeedKmh,
+        summary: {
+          num_steps: steps.length,
+          flight_time_s: lastStep.time_s,
+          final_error_m: lastStep.dist_2d_m,
+          min_error_m: Number(minErr.toFixed(2)),
+          total_rolls_360: Number((totalRollRad / (2 * Math.PI)).toFixed(2)),
+          max_airspeed_ms: Number(maxV.toFixed(2)),
+          final_pos_ne: [lastStep.posN, lastStep.posE],
+          final_target_ne: [lastStep.targetN, lastStep.targetE]
+        },
+        steps: steps
+      };
+      statusEl.textContent = "Saving flight data to server...";
+      try {
+        const res = await fetch("/api/save-flight", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        statusEl.innerHTML = `Saved: <strong>${data.filename}</strong> (${data.num_steps} steps, Final Error: ${data.final_error_m}m, Spins: ${payload.summary.total_rolls_360})`;
+      } catch (err) {
+        statusEl.textContent = "Error saving flight data: " + err.message;
+      }
     };
 
     slAirspeed.oninput = () => {
@@ -1839,6 +1920,7 @@
       simState.posN = 0.0;
       simState.posE = 0.0;
       simState.trail = [[0, alt0 * WORLD_SCALE, 0]];
+      simState.recordedSteps = [];
       // Place target in a completely different direction at random reachable radius
       const rT = 120.0 + Math.random() * (alt0 * 0.78);
       const azT = (Math.random() * 2.0 - 1.0) * Math.PI;
@@ -1920,6 +2002,7 @@
         gpsState.posN = northM;
         gpsState.posE = eastM;
       }
+      initGpsTargetHistory();
       // If the glider has already fallen too low (< 400 m) to reach a newly clicked far-away target, automatically re-launch from 1,000 m!
       if (simState.altM < 400.0) {
         simState.roll = 0.0;
@@ -2072,6 +2155,7 @@
         gpsState.posN = Math.max(-2500.0, Math.min(2500.0, pt.x / WORLD_SCALE));
         gpsState.posE = Math.max(-2500.0, Math.min(2500.0, pt.z / WORLD_SCALE));
         gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
+        initGpsTargetHistory();
         syncGpsUiFromState();
       }
     }
