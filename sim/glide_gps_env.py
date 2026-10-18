@@ -60,7 +60,7 @@ class GlideGpsTargetEnv(gym.Env):
 
     def __init__(
         self,
-        target_mode: str = "static",  # "static", "linear", "curved", or "aggressive"
+        target_mode: str = "static",  # "static", "linear", "crossing_tangent", "curved", or "aggressive"
         release_altitude_m: float = 1000.0,
         control_dt: float = 0.05,
         max_wing_flap_deg: float = MAX_WING_FLAP_DEG,
@@ -68,7 +68,7 @@ class GlideGpsTargetEnv(gym.Env):
         hit_radius_m: float = 3.0,
     ) -> None:
         super().__init__()
-        assert target_mode in ("static", "linear", "curved", "aggressive")
+        assert target_mode in ("static", "linear", "crossing_tangent", "curved", "aggressive")
         self.target_mode = target_mode
         self.release_altitude_m = float(release_altitude_m)
         self.control_dt = float(control_dt)
@@ -188,25 +188,28 @@ class GlideGpsTargetEnv(gym.Env):
         alt = float(options.get("altitude_m", self.release_altitude_m))
         deterministic = bool(options.get("deterministic", False))
 
+        start_ne = options.get("start_ne", [0.0, 0.0])
         if "angles_deg" in options or "speed_ms" in options:
             roll0, pitch0, yaw0 = options.get("angles_deg", [0.0, -89.5, 0.0])
             spd0 = float(options.get("speed_ms", 0.1))
             self.omega = np.zeros(3, dtype=np.float64)
             self.angles = np.deg2rad([roll0, pitch0, yaw0])
             self.R_wb = euler_to_rotation_matrix(self.angles[0], self.angles[1], self.angles[2])
-            self.pos_ned = np.array([0.0, 0.0, -alt], dtype=np.float64)
+            self.pos_ned = np.array([float(start_ne[0]), float(start_ne[1]), -alt], dtype=np.float64)
             self.vel_ned = self.R_wb @ np.array([spd0, 0.0, 0.0], dtype=np.float64)
         elif self.randomize_drop and not deterministic:
-            if self.np_random.uniform(0.0, 1.0) < 0.50:
-                alt = float(self.np_random.uniform(450.0, 1000.0))
+            if self.np_random.uniform(0.0, 1.0) < 0.55:
+                alt = float(self.np_random.uniform(350.0, 1100.0))
                 roll0 = float(self.np_random.uniform(-180.0, 180.0))
                 pitch0 = float(self.np_random.uniform(-88.0, 15.0))
                 yaw0 = float(self.np_random.uniform(-180.0, 180.0))
-                spd0 = float(self.np_random.uniform(12.0, 52.0))
-                self.omega = self.np_random.uniform(-0.3, 0.3, size=3).astype(np.float64)
+                spd0 = float(self.np_random.uniform(10.0, 52.0))
+                sx0 = float(self.np_random.uniform(-250.0, 250.0))
+                sy0 = float(self.np_random.uniform(-250.0, 250.0))
+                self.omega = self.np_random.uniform(-0.25, 0.25, size=3).astype(np.float64)
                 self.angles = np.deg2rad([roll0, pitch0, yaw0])
                 self.R_wb = euler_to_rotation_matrix(self.angles[0], self.angles[1], self.angles[2])
-                self.pos_ned = np.array([0.0, 0.0, -alt], dtype=np.float64)
+                self.pos_ned = np.array([sx0, sy0, -alt], dtype=np.float64)
                 self.vel_ned = self.R_wb @ np.array([spd0, 0.0, 0.0], dtype=np.float64)
             else:
                 roll0 = float(self.np_random.uniform(-180.0, 180.0))
@@ -222,7 +225,7 @@ class GlideGpsTargetEnv(gym.Env):
             self.omega = np.zeros(3, dtype=np.float64)
             self.angles = np.deg2rad([roll0, pitch0, yaw0])
             self.R_wb = euler_to_rotation_matrix(self.angles[0], self.angles[1], self.angles[2])
-            self.pos_ned = np.array([0.0, 0.0, -alt], dtype=np.float64)
+            self.pos_ned = np.array([float(start_ne[0]), float(start_ne[1]), -alt], dtype=np.float64)
             self.vel_ned = np.array([0.0, 0.0, 0.1], dtype=np.float64)
 
         # Boundary circle diameter = 2 * (alt - 70) -> radius = alt - 70
@@ -250,14 +253,15 @@ class GlideGpsTargetEnv(gym.Env):
             if self.target_mode == "static":
                 self.target_ned = np.array([680.0, 240.0, 0.0], dtype=np.float64)
                 self.target_vel_ne = np.array([0.0, 0.0], dtype=np.float64)
-            elif self.target_mode == "linear":
-                self.target_ned = np.array([520.0, -220.0, 0.0], dtype=np.float64)
-                self.target_speed_ms = 11.0
-                self.target_hdg_rad = np.arctan2(9.5, 5.5)
-                self.target_vel_ne = np.array(
-                    [self.target_speed_ms * np.cos(self.target_hdg_rad), self.target_speed_ms * np.sin(self.target_hdg_rad)],
-                    dtype=np.float64,
-                )
+            elif self.target_mode in ("linear", "crossing_tangent"):
+                # Single-Intersection Tangent-Chord Crossing Car:
+                # Tangent point P* = (380, 0) at r* = 380 m from origin (0,0), car crosses perpendicular along +East at 18 m/s (65 km/h),
+                # timed so it passes P* at t* = 24.5 s (the exact minimum flight time to r* = 380 m)!
+                t_star = 24.5
+                self.target_speed_ms = 18.0
+                self.target_hdg_rad = np.pi / 2.0
+                self.target_vel_ne = np.array([0.0, self.target_speed_ms], dtype=np.float64)
+                self.target_ned = np.array([380.0, -self.target_speed_ms * t_star, 0.0], dtype=np.float64)
             else:
                 self.target_ned = np.array([500.0, -240.0, 0.0], dtype=np.float64)
                 self.target_speed_ms = 14.0
@@ -275,15 +279,26 @@ class GlideGpsTargetEnv(gym.Env):
                 az_init = float(self.np_random.uniform(-np.pi, np.pi))
                 self.target_ned = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init), 0.0], dtype=np.float64)
                 self.target_vel_ne = np.zeros(2, dtype=np.float64)
-            elif self.target_mode == "linear":
-                r_init = float(self.np_random.uniform(120.0, min(self.boundary_radius_m * 0.75, 680.0)))
-                az_init = float(self.np_random.uniform(-np.pi, np.pi))
-                self.target_ned = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init), 0.0], dtype=np.float64)
-                self.target_speed_ms = float(self.np_random.uniform(4.0, 20.0))
-                tangent_dir = az_init + float(self.np_random.choice([-1.0, 1.0])) * float(self.np_random.uniform(1.3, 2.2))
-                self.target_hdg_rad = tangent_dir
+            elif self.target_mode in ("linear", "crossing_tangent"):
+                # Single-Intersection Tangent-Chord Crossing Car:
+                # Choose tangent distance d_perp from center along angle theta_perp.
+                # Car drives perpendicular along the chord (theta_perp +- pi/2), timed to pass P* at T_min(d_perp)!
+                d_low = min(180.0, self.boundary_radius_m * 0.35)
+                d_high = max(d_low + 40.0, min(620.0, self.boundary_radius_m * 0.72))
+                d_perp = float(self.np_random.uniform(d_low, d_high))
+                theta_perp = float(self.np_random.uniform(-np.pi, np.pi))
+                p_star_n = d_perp * np.cos(theta_perp)
+                p_star_e = d_perp * np.sin(theta_perp)
+                t_star = 21.8 + 0.0085 * d_perp
+                self.target_speed_ms = float(self.np_random.uniform(10.0, 26.0))
+                chord_sign = float(self.np_random.choice([-1.0, 1.0]))
+                self.target_hdg_rad = theta_perp + chord_sign * (np.pi / 2.0)
                 self.target_vel_ne = np.array(
                     [self.target_speed_ms * np.cos(self.target_hdg_rad), self.target_speed_ms * np.sin(self.target_hdg_rad)],
+                    dtype=np.float64,
+                )
+                self.target_ned = np.array(
+                    [p_star_n - self.target_vel_ne[0] * t_star, p_star_e - self.target_vel_ne[1] * t_star, 0.0],
                     dtype=np.float64,
                 )
             else:
@@ -430,7 +445,7 @@ class GlideGpsTargetEnv(gym.Env):
             self.target_vel_ne[0] = self.target_speed_ms * np.cos(self.target_hdg_rad)
             self.target_vel_ne[1] = self.target_speed_ms * np.sin(self.target_hdg_rad)
 
-        if self.target_mode in ("linear", "curved", "aggressive"):
+        if self.target_mode in ("linear", "crossing_tangent", "curved", "aggressive"):
             self.target_ned[0] += self.target_vel_ne[0] * self.control_dt
             self.target_ned[1] += self.target_vel_ne[1] * self.control_dt
             r_t = float(np.hypot(self.target_ned[0], self.target_ned[1]))
@@ -493,11 +508,12 @@ class GlideGpsTargetEnv(gym.Env):
 
         hit_ground = bool(-self.pos_ned[2] <= 0.0)
         if hit_ground:
-            # End-of-flight evaluation: overwhelming weight on <= 3.0 m target hit accuracy!
+            # End-of-flight evaluation: overwhelming weight on <= 3.0 m target hit accuracy + minimum-time fast arrival bonus!
             path_eff = min(1.0, self.initial_dist_3d / max(1.0, self.total_path_length_m))
             hit_bonus = 6000.0 * float(np.exp(-((cur_dist_2d / self.hit_radius_m) ** 2)))
+            fast_time_bonus = max(0.0, (42.0 - t_sec) * 60.0) if cur_dist_2d <= self.hit_radius_m else 0.0
             near_bonus = max(0.0, 1500.0 - 15.0 * cur_dist_2d)
-            reward += (hit_bonus + near_bonus) * (0.85 + 0.15 * path_eff) - 0.5 * self.total_oscillation_penalty
+            reward += (hit_bonus + fast_time_bonus + near_bonus) * (0.85 + 0.15 * path_eff) - 0.5 * self.total_oscillation_penalty
 
         terminated = hit_ground
         truncated = bool(self.step_count >= self.max_steps)

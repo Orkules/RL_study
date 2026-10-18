@@ -14,16 +14,10 @@ from sim.glide_gps_env import GlideGpsTargetEnv
 
 def omni_3d_guidance(obs: np.ndarray, lead_gain: float = 0.85) -> np.ndarray:
     """
-    24D INAV Circular Attitude + Full 3D Relative Target Guidance with Terminal 3D ZEM Dive:
-      - Reads 24D observation:
-          0..2  : (dir_bx, dir_by, dir_bz)
-          3     : dist_3d / 1000.0
-          4..5  : (u/50, w/50)
-          6..8  : (p/10, q/10, r/10)
-          9..14 : (sin_roll, cos_roll, sin_pitch, cos_pitch, sin_yaw, cos_yaw)
-          15..17: 1-step 3D target velocity in body frame / 25.0
-          18..20: 0.25s 3D target displacement in body frame / 6.25
-          21..23: 0.50s 3D target displacement in body frame / 12.5
+    Production-Grade Zero-Shake 24D INAV Circular Attitude + 3D ZEM Guidance:
+      - Dynamic-pressure gain attenuation (TPA: q_scale = 1 / (V / 24)^2) eliminates high-speed flap chatter.
+      - Non-singular lateral roll alignment (lat_err) eliminates 180-deg roll whipping near zero error.
+      - Continuous glide-to-dive blending (w_dive) and vertical-pull blending (vert_blend) eliminate switching jumps.
     """
     dir_bx, dir_by, dir_bz = float(obs[0]), float(obs[1]), float(obs[2])
     dist_m = max(1.0, float(obs[3]) * 1000.0)
@@ -36,14 +30,16 @@ def omni_3d_guidance(obs: np.ndarray, lead_gain: float = 0.85) -> np.ndarray:
     g_by = c_pitch * s_roll
     g_bz = c_pitch * c_roll
 
+    v_ms = max(12.0, float(np.hypot(u_n, w_n) * 50.0))
+    q_scale = 1.0 / max(1.0, (v_ms / 24.0) ** 2)
+    q_pitch_scale = 1.0 / max(1.0, (v_ms / 32.0) ** 2)
+
     vt_bx = float(obs[15]) * 25.0
     vt_by = float(obs[16]) * 25.0
     vt_bz = float(obs[17]) * 25.0
     v5_bx = float(obs[18]) * 25.0
     v5_by = float(obs[19]) * 25.0
     v5_bz = float(obs[20]) * 25.0
-
-    # Target 3D acceleration in body frame from 1-step vs 5-step velocity difference:
     at_bx = (vt_bx - v5_bx) / 0.10
     at_by = (vt_by - v5_by) / 0.10
     at_bz = (vt_bz - v5_bz) / 0.10
@@ -55,11 +51,11 @@ def omni_3d_guidance(obs: np.ndarray, lead_gain: float = 0.85) -> np.ndarray:
     v_rel_by = -vt_by
     v_rel_bz = w_n * 50.0 - vt_bz
     v_close = max(12.0, dir_bx * v_rel_bx + dir_by * v_rel_by + dir_bz * v_rel_bz)
-    t_go = (alt_m / v_down) if alt_m < 230.0 else min(15.0, dist_m / v_close)
+    t_go = (alt_m / v_down) if alt_m < 170.0 else min(16.0, dist_m / v_close)
 
     if lead_gain > 0.0:
-        lead_mult = (1.02 if alt_m < 230.0 else 1.15) * lead_gain
-        t_lead = min(12.0, t_go * lead_mult)
+        lead_mult = (1.02 if alt_m < 170.0 else 1.15) * lead_gain
+        t_lead = min(13.0, t_go * lead_mult)
         t_acc = min(2.4, t_go) * lead_gain
         aim_bx = dir_bx + (vt_bx * t_lead + 0.50 * at_bx * (t_acc ** 2)) / dist_m
         aim_by = dir_by + (vt_by * t_lead + 0.50 * at_by * (t_acc ** 2)) / dist_m
@@ -80,66 +76,44 @@ def omni_3d_guidance(obs: np.ndarray, lead_gain: float = 0.85) -> np.ndarray:
     alt_frac = max(0.02, dot_ag)
     req_ratio = horiz_norm / alt_frac
 
-    if lead_gain > 0.0:
-        if req_ratio < 0.38 or alt_m < 220.0:
-            if g_bx > 0.94 and abs(h_by) > 0.14 * horiz_norm:
-                ang_up = float(np.arctan2(h_by, -h_bz))
-                ang_inv = float(np.arctan2(h_by, +h_bz))
-                roll_err = ang_up if abs(ang_up) <= abs(ang_inv) else ang_inv
-                return np.array([0.0, np.clip(1.4 * roll_err - 0.35 * p_n, -0.8, 0.8)], dtype=np.float32)
+    inv_s = (1.0 if h_bz <= 0.0 else -1.0) if g_bx > 0.85 else (1.0 if g_bz >= 0.0 else -1.0)
 
-            alpha_trim = float(np.arctan2(w_n, max(0.1, u_n)))
-            pitch_err = float(np.arctan2(aim_bz, max(0.05, aim_bx))) - alpha_trim
-            inv_s = 1.0 if h_bz <= 0.0 else -1.0
-            grav_bias = 0.062 * inv_s * horiz_norm * min(1.0, dist_m / 250.0)
-            pitch_cmd = float(np.clip(-9.8 * pitch_err + grav_bias - 0.30 * q_n, -1.0, 1.0))
+    w_rr = float(np.clip((0.36 - req_ratio) / 0.07, 0.0, 1.0))
+    w_d  = float(np.clip((170.0 - dist_m) / 50.0, 0.0, 1.0))
+    w_dive = max(w_rr, w_d)
 
-            ang_d = float(np.arctan2(aim_by, -aim_bz))
-            ang_v = float(np.arctan2(-aim_by, aim_bz))
-            r_err = ang_d if abs(ang_d) <= abs(ang_v) else ang_v
-            roll_cmd = float(np.clip(4.8 * r_err - 0.28 * p_n - 0.12 * r_n, -1.0, 1.0))
-            return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
-    else:
-        if req_ratio < 0.35 or dist_m < 320.0:
-            if g_bx > 0.94 and abs(h_by) > 0.14 * horiz_norm:
-                ang_up = float(np.arctan2(h_by, -h_bz))
-                ang_inv = float(np.arctan2(h_by, +h_bz))
-                roll_err = ang_up if abs(ang_up) <= abs(ang_inv) else ang_inv
-                return np.array([0.0, np.clip(1.2 * roll_err - 0.35 * p_n, -0.8, 0.8)], dtype=np.float32)
+    alpha_trim = float(np.arctan2(w_n, max(0.1, u_n)))
+    pitch_err = float(np.arctan2(aim_bz, max(0.05, aim_bx))) - alpha_trim
+    grav_bias = 0.058 * inv_s * horiz_norm * min(1.0, dist_m / 250.0)
+    pitch_dive = float(np.clip((-7.5 * pitch_err + grav_bias) * q_pitch_scale - 0.16 * q_n, -1.0, 1.0))
 
-            alpha_trim = float(np.arctan2(w_n, max(0.1, u_n)))
-            pitch_err = float(np.arctan2(aim_bz, max(0.05, aim_bx))) - alpha_trim
-            inv_s = 1.0 if h_bz <= 0.0 else -1.0
-            grav_bias = 0.055 * inv_s * horiz_norm * min(1.0, dist_m / 250.0)
-            pitch_cmd = float(np.clip(-6.2 * pitch_err + grav_bias - 0.32 * q_n, -1.0, 1.0))
+    lat_mag = float(np.hypot(aim_by, aim_bz))
+    lat_err = float(aim_by / max(0.10, lat_mag)) * float(np.clip(lat_mag * 9.0, 0.0, 1.0))
+    roll_dive = float(np.clip(1.8 * q_scale * lat_err * inv_s - 0.15 * p_n - 0.08 * r_n, -0.65, 0.65))
 
-            if req_ratio > 0.24:
-                bearing = float(np.arctan2(h_by, max(0.04, h_bx)))
-                desired_g_by = float(np.clip(2.8 * bearing, -0.88, 0.88))
-                roll_cmd = float(np.clip(2.2 * (desired_g_by - g_by * inv_s) * inv_s - 0.28 * p_n - 0.12 * r_n, -1.0, 1.0))
-            else:
-                ang_d = float(np.arctan2(aim_by, -aim_bz))
-                ang_v = float(np.arctan2(-aim_by, aim_bz))
-                r_err = ang_d if abs(ang_d) <= abs(ang_v) else ang_v
-                roll_cmd = float(np.clip(3.2 * r_err - 0.28 * p_n - 0.12 * r_n, -1.0, 1.0))
-            return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
+    if w_dive >= 0.999:
+        return np.array([pitch_dive, roll_dive], dtype=np.float32)
 
-    if g_bx > 0.94 and abs(h_by) > 1.2 * abs(h_bz) and abs(h_by) > 0.25 * horiz_norm:
-        ang_up = float(np.arctan2(h_by, -h_bz))
-        ang_inv = float(np.arctan2(h_by, +h_bz))
-        roll_err = ang_up if abs(ang_up) <= abs(ang_inv) else ang_inv
-        return np.array([0.02, np.clip(0.85 * roll_err - 0.25 * p_n, -0.7, 0.7)], dtype=np.float32)
-
-    if h_bx < -0.15 * horiz_norm:
+    if h_bx < -0.15 * horiz_norm and g_bx <= 0.88:
         loop_sign = -1.0 if h_bz >= 0.0 else +1.0
-        return np.array([loop_sign * 0.85, np.clip(-0.35 * p_n - 0.15 * r_n, -0.4, 0.4)], dtype=np.float32)
+        return np.array([loop_sign * 0.85, np.clip(-0.16 * p_n - 0.08 * r_n, -0.4, 0.4)], dtype=np.float32)
 
-    inv_sign = 1.0 if h_bz <= 0.0 else -1.0
+    vert_blend = float(np.clip((g_bx - 0.86) / 0.10, 0.0, 1.0))
+    az_misalign = float(abs(h_by) / horiz_norm)
+    pull_scale = float(np.clip(1.0 - 1.8 * vert_blend * az_misalign, 0.05, 1.0))
+
     bearing = float(np.arctan2(h_by, max(0.04, h_bx)))
-    mag_pitch = float(np.clip(0.22 + 0.55 * (req_ratio - 0.35) + 0.42 * abs(bearing), 0.08, 0.88))
-    pitch_cmd = inv_sign * mag_pitch
+    mag_pitch = float(np.clip(0.24 + 0.62 * (req_ratio - 0.32) + 0.45 * abs(bearing), 0.08, 0.90)) * pull_scale
+    pitch_glide = inv_s * mag_pitch
+
+    lat_h = float(h_by / horiz_norm) * inv_s
+    roll_vert = float(np.clip(0.85 * q_scale * lat_h - 0.16 * p_n, -0.5, 0.5))
     desired_g_by = float(np.clip(1.65 * bearing, -0.82, 0.82))
-    roll_cmd = float(np.clip(1.30 * (desired_g_by - g_by * inv_sign) * inv_sign - 0.28 * p_n - 0.12 * r_n, -1.0, 1.0))
+    roll_horiz = float(np.clip(1.05 * q_scale * (desired_g_by - g_by * inv_s) * inv_s - 0.15 * p_n - 0.08 * r_n, -0.6, 0.6))
+    roll_glide = vert_blend * roll_vert + (1.0 - vert_blend) * roll_horiz
+
+    pitch_cmd = (1.0 - w_dive) * pitch_glide + w_dive * pitch_dive
+    roll_cmd  = (1.0 - w_dive) * roll_glide  + w_dive * roll_dive
     return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
 
 
