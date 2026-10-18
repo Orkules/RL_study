@@ -22,12 +22,10 @@ SPEED_TIERS_KMH = [50.0, 80.0, 110.0, 140.0, 175.0, 210.0, 250.0, 300.0]
 
 def high_speed_dive_pursuit(obs: np.ndarray) -> np.ndarray:
     """
-    Universal 360-Degree All-Range (50 m to 1,000 m) + Terminal 3D Dive Car Hunter:
-      - Uses the 22D past-position history in the final 220 m dive to lead the forward-driving Ackermann car!
+    Universal 360-Degree All-Range + Terminal 3D Dive Car Hunter (24D INAV + Relative Target Obs):
     """
-    dist_n = float(obs[3])
-    dist_m = max(10.0, dist_n * 1500.0)
-    lead_eff = 0.35 if dist_m < 220.0 else 0.0
+    dist_m = max(10.0, float(obs[3]) * 1000.0)
+    lead_eff = 0.65 if dist_m < 260.0 else 0.15
     return omni_3d_guidance(obs, lead_gain=lead_eff)
 
 
@@ -35,10 +33,8 @@ def evasive_car_heuristic(car_obs: np.ndarray) -> np.ndarray:
     """
     Realistic Ackermann Evasive Car Driving Policy:
       - Reads the missile's 3D position (rel_x_car, rel_y_car, alt_n), 3D velocity (mv_x_car, mv_y_car, mv_d),
-        and 3D nose attitude (nose_x_car, nose_y_car) in the car's frame.
+        and 3D nose attitude (nose_x_car, nose_y_car) in the car's frame, plus boundary margin (car_obs[15]).
       - Maintains continuous forward speed (throttle > 0.75) to explore new ground territory and avoid stagnation.
-      - Executes smooth Ackermann S-curves orthogonal (90 deg) to the missile's predicted impact vector,
-        with a committed high-G Ackermann break-turn when time-to-impact t_go < 4.2 s!
     """
     rel_x = float(car_obs[0])
     rel_y = float(car_obs[1])
@@ -48,24 +44,22 @@ def evasive_car_heuristic(car_obs: np.ndarray) -> np.ndarray:
     nose_x = float(car_obs[7])
     nose_y = float(car_obs[8])
     cur_steer = float(car_obs[13])
-    t_go_n = float(car_obs[15])  # t_go / 30.0
+    boundary_margin = float(car_obs[15])
 
     # Missile approach vector in car frame (blend velocity + nose attitude + relative LOS)
     threat_x = 0.65 * mv_x + 0.25 * nose_x - 0.55 * rel_x
     threat_y = 0.65 * mv_y + 0.25 * nose_y - 0.55 * rel_y
     threat_ang = float(np.arctan2(threat_y, threat_x))
 
-    # Smooth Ackermann evasion into open territory:
-    if t_go_n < 0.14:
-        # Terminal Ackermann break-turn: slightly modulate throttle (0.72) so front tires have maximum lateral grip!
+    # Smooth Ackermann evasion into open territory (using altitude alt_n instead of time-to-go):
+    if alt_n < 0.22 and boundary_margin > 0.08:
         perp_sign = -1.0 if threat_y >= 0.0 else +1.0
         steer_cmd = float(np.clip(perp_sign * 0.85, -1.0, 1.0))
-        throttle_cmd = 0.72
+        throttle_cmd = 0.75
     else:
         perp_sign = +1.0 if threat_y >= 0.0 else -1.0
         desired_offset = threat_ang + perp_sign * (0.55 * np.pi)
         desired_offset = float((desired_offset + np.pi) % (2.0 * np.pi) - np.pi)
-        # Smooth steering command blended with current steer angle for natural highway/track arcs
         steer_cmd = float(np.clip(0.95 * desired_offset + 0.20 * cur_steer, -0.85, 0.85))
         throttle_cmd = 0.95
 
@@ -312,7 +306,7 @@ def adapt_missile_pursuer_round(
 
         for _ in range(ppo_updates):
             rollout_steps = 256
-            obs_b = np.zeros((rollout_steps, 4, 22), dtype=np.float32)
+            obs_b = np.zeros((rollout_steps, 4, 24), dtype=np.float32)
             act_b = np.zeros((rollout_steps, 4, 2), dtype=np.float32)
             logp_b = np.zeros((rollout_steps, 4), dtype=np.float32)
             rew_b = np.zeros((rollout_steps, 4), dtype=np.float32)
@@ -356,7 +350,7 @@ def adapt_missile_pursuer_round(
                 lg = dlt + ppo.cfg.gamma * ppo.cfg.gae_lambda * nnt * lg
                 adv_b[t] = lg
             ret_b = adv_b + val_b
-            ppo.update(obs_b.reshape(-1, 22), act_b.reshape(-1, 2), logp_b.reshape(-1), ret_b.reshape(-1), adv_b.reshape(-1))
+            ppo.update(obs_b.reshape(-1, 24), act_b.reshape(-1, 2), logp_b.reshape(-1), ret_b.reshape(-1), adv_b.reshape(-1))
 
 
 def evaluate_10_duel_trials(
@@ -455,10 +449,10 @@ def run_coevolution_ladder(max_rounds: int = 20, infinite_mode: bool = False) ->
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    missile_model = ActorCritic(obs_dim=22, act_dim=2, hidden_dim=64)
+    missile_model = ActorCritic(obs_dim=24, act_dim=2, hidden_dim=64)
     if (ckpt_dir / "gps_3_aggressive.pt").exists():
         ck = torch.load(ckpt_dir / "gps_3_aggressive.pt", map_location="cpu", weights_only=False)
-        if ck.get("obs_dim") == 22:
+        if ck.get("obs_dim") == 24:
             missile_model.load_state_dict(ck["model_state_dict"])
 
     car_model = ActorCritic(obs_dim=16, act_dim=2, hidden_dim=64)
@@ -551,7 +545,7 @@ def run_coevolution_ladder(max_rounds: int = 20, infinite_mode: bool = False) ->
                 "stage_id": "gps_4_car_pursuit",
                 "stage_label": f"Adversarial Car-Hunter Missile (vs {cur_speed_kmh:.0f} km/h Car)",
                 "target_mode": "car_evasion",
-                "obs_dim": 22,
+                "obs_dim": 24,
                 "car_max_speed_kmh": cur_speed_kmh,
                 "model_state_dict": missile_model.state_dict(),
                 "hits_out_of_10": ev["hits"],

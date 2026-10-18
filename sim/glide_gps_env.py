@@ -19,70 +19,68 @@ from sim.wing_linkage import (
 )
 
 
+def compute_inav_circular_attitude(R_wb: np.ndarray) -> Tuple[float, float, float, float, float, float]:
+    """
+    Exact INAV imuUpdateEulerAngles (src/main/flight/imu.c) circularly normalized with (sin, cos)
+    so there is zero discontinuity at +-180 deg roll or 0/360 deg yaw:
+      - roll  = atan2(R_wb[2, 1], R_wb[2, 2])
+      - pitch = (pi / 2) - acos(-R_wb[2, 0]) = asin(-R_wb[2, 0])
+      - yaw   = -atan2(R_wb[1, 0], R_wb[0, 0])
+    Returns: (sin_roll, cos_roll, sin_pitch, cos_pitch, sin_yaw, cos_yaw)
+    """
+    roll_rad = float(np.arctan2(R_wb[2, 1], R_wb[2, 2]))
+    sin_pitch = float(np.clip(-R_wb[2, 0], -1.0, 1.0))
+    cos_pitch = float(np.sqrt(max(0.0, 1.0 - sin_pitch * sin_pitch)))
+    yaw_rad = float(-np.arctan2(R_wb[1, 0], R_wb[0, 0]))
+    return (
+        float(np.sin(roll_rad)),
+        float(np.cos(roll_rad)),
+        sin_pitch,
+        cos_pitch,
+        float(np.sin(yaw_rad)),
+        float(np.cos(yaw_rad)),
+    )
+
+
 class GlideGpsTargetEnv(gym.Env):
     """
-    100% Orientation-Free 3D Body-Frame Gymnasium RL Environment for the 300 g Delta-Wing Airframe:
-      - NO Euler angles (no roll, no pitch, no yaw) are ever given to the neural network!
-      - The network has NO concept of "upright" vs "upside-down" — it is 100% symmetric and free on all 3 axes.
-      - Every observation is expressed strictly in the airframe's own local 3D Body Frame (+x_b Nose, +y_b Right Wing, +z_b Belly).
-
-    Supported Training & Test Modes (`target_mode`):
-      1. "balls_3d" (3D Multi-Ball Proximity Field in Space):
-         - Spawns 6 balls at different 3D positions (North, East, Altitude) in the air (not lined up in the same direction)
-           plus 1 final ball on the ground (Altitude = 0 m).
-         - Balls are NEVER collected/deleted! Instead, each ball has a continuous closeness score
-           `s_i = exp(-min_dist_i / 110.0)` in `[0, 1]` based on how close the glider has passed to ball `i`.
-         - As the glider gets close to MORE different balls, the cumulative closeness score `S = sum_i s_i` increases,
-           and the reward gain scales superlinearly (`Total Potential = 400 * S + 180 * S^2`) alongside 3D distance-decrease
-           toward the nearest unvisited ball below the glider (`gain = 1.0 + 0.55 * S`).
-      2. "static" (Ground Target Test):
-         - Static GPS target `(N_t, E_t, 0)` placed anywhere 360 deg around `(0, 0)` at radii `150–1,000 m`.
-      3. "linear" (Linear Moving Target at Different Speeds):
-         - Target moves in a straight line at varied speeds (`4 m/s` slow up to `24 m/s` fast) in any 360 deg direction.
-      4. "curved" / "aggressive" (Curved Moving Target at Different Speeds):
-         - Target moves along a continuous curved trajectory (`v(t)` rotates smoothly with angular turn rate `omega_t`
-           in `[-0.14, +0.14] rad/s` at speeds `8–22 m/s`, creating circular arcs and S-curves on the ground).
-
-    Observation Space (14D Pure 3D Body-Frame State — Zero Euler Angles):
-      0: dir_bx         - 3D unit vector to active target/ball along Body Nose (+x_b) in [-1, +1]
-      1: dir_by         - 3D unit vector to active target/ball along Body Right Wing (+y_b) in [-1, +1]
-      2: dir_bz         - 3D unit vector to active target/ball along Body Belly (+z_b) in [-1, +1]
-      3: dist_3d_norm   - 3D distance to active target/ball / 1500.0
-      4: u_norm         - Body forward airspeed u / 50.0 (m/s)
-      5: v_norm         - Body lateral airspeed v / 50.0 (m/s)
-      6: w_norm         - Body normal airspeed w / 50.0 (m/s)
-      7: p_norm         - Body roll rate p / 10.0 (rad/s)
-      8: q_norm         - Body pitch rate q / 10.0 (rad/s)
-      9: r_norm         - Body yaw rate r / 10.0 (rad/s)
-     10: grav_bx        - Gravity unit vector along Body Nose (+x_b) = R_wb[2, 0] in [-1, +1]
-     11: grav_by        - Gravity unit vector along Body Right Wing (+y_b) = R_wb[2, 1] in [-1, +1]
-     12: grav_bz        - Gravity unit vector along Body Belly (+z_b) = R_wb[2, 2] in [-1, +1]
-     13: tv_by          - Target lateral velocity in Body Right Wing (+y_b) / 25.0
+    300 g Delta-Wing Airframe Guided Homing Environment with 24D INAV + Relative Target Observation:
+      - Boundary circle around origin (0, 0): Diameter = 2 * (altitude - 70 m), i.e. Radius = altitude - 70 m.
+      - Strict target hit threshold: hit_radius_m = 3.0 m (error <= 3.0 m = Hit (1), > 3.0 m = Miss (0)).
+      - Observation Space (24D — Zero Clipping, Circularly Normalized INAV Attitude + Relative Coordinates):
+          0..2  : Relative target coordinates (dx, dy, dz) = (target_ned - pos_ned) / 1000.0 (unclipped)
+          3..4  : Body airspeed components (u / 50.0, w / 50.0)
+          5..7  : Body gyroscope angular rates (p / 10.0, q / 10.0, r / 10.0)
+          8..13 : Circularly normalized INAV attitude (sin_roll, cos_roll, sin_pitch, cos_pitch, sin_yaw, cos_yaw)
+          14..15: Instantaneous 1-step target movement (target(t) - target(t - 0.05s)) / 0.05s / 25.0 in body frame
+          16..23: Previous target displacements (target(t) - target(t - dt)) at dt = 0.25s, 0.50s, 0.75s, 1.00s in body frame
     """
 
     metadata = {"render_modes": ["dict"], "render_fps": 20}
 
     def __init__(
         self,
-        target_mode: str = "static",  # "balls_3d", "static", "linear", "curved", or "aggressive"
+        target_mode: str = "static",  # "static", "linear", "curved", or "aggressive"
         release_altitude_m: float = 1000.0,
         control_dt: float = 0.05,
         max_wing_flap_deg: float = MAX_WING_FLAP_DEG,
         randomize_drop: bool = True,
+        hit_radius_m: float = 3.0,
     ) -> None:
         super().__init__()
-        assert target_mode in ("balls_3d", "static", "linear", "curved", "aggressive")
+        assert target_mode in ("static", "linear", "curved", "aggressive")
         self.target_mode = target_mode
         self.release_altitude_m = float(release_altitude_m)
         self.control_dt = float(control_dt)
         self.max_wing_flap_deg = float(max_wing_flap_deg)
         self.randomize_drop = bool(randomize_drop)
+        self.hit_radius_m = float(hit_radius_m)
 
         self.cfg = AirframeAeroConfig(max_wing_flap_deg=self.max_wing_flap_deg)
         self.geom = LinkageGeometry()
 
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(22,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(24,), dtype=np.float32
         )
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(2,), dtype=np.float32
@@ -96,23 +94,21 @@ class GlideGpsTargetEnv(gym.Env):
         self.delta_r_deg = 0.0
         self.delta_l_deg = 0.0
         self.last_action = np.zeros(2, dtype=np.float32)
+        self.prev_action = np.zeros(2, dtype=np.float32)
+        self.prev_omega = np.zeros(3, dtype=np.float64)
+        self.prev_domega = np.zeros(3, dtype=np.float64)
 
-        # Active 3D target point in NED [North_m, East_m, Down_m] and velocity [vN, vE]
+        self.current_release_altitude_m = self.release_altitude_m
+        self.boundary_radius_m = max(50.0, self.release_altitude_m - 70.0)
+
         self.target_ned = np.array([680.0, 240.0, 0.0], dtype=np.float64)
-        self.target_ne = self.target_ned[:2]  # alias for ground N, E
+        self.target_ne = self.target_ned[:2]
         self.target_vel_ne = np.zeros(2, dtype=np.float64)
         self.target_speed_ms = 0.0
         self.target_hdg_rad = 0.0
         self.target_turn_rate_rads = 0.0
         self.target_turn_freq = 0.0
-        # Target position history buffer (21 steps = 1.00 s of past target positions at 20 Hz)
         self.target_history_ned: List[np.ndarray] = []
-
-        # 3D Balls list for "balls_3d" mode: each ball is [North_m, East_m, Down_m (-Alt)]
-        self.balls_ned: np.ndarray = np.zeros((1, 3), dtype=np.float64)
-        self.ball_min_dists: np.ndarray = np.full(1, 1e6, dtype=np.float64)
-        self.active_ball_idx: int = 0
-        self.prev_ball_potential: float = 0.0
 
         self.step_count = 0
         self.max_steps = 1600
@@ -120,57 +116,28 @@ class GlideGpsTargetEnv(gym.Env):
         self.initial_dist_3d = 1000.0
         self.total_path_length_m = 0.0
         self.total_distance_closed_m = 0.0
-
-    def _select_active_ball(self) -> None:
-        """
-        In 'balls_3d' mode, balls are never deleted/collected.
-        The sensor points to the next ball at or below the glider's current altitude band so the glider
-        weaves from ball to ball through the 3D space all the way to the ground ball.
-        """
-        if self.target_mode != "balls_3d":
-            return
-        cur_alt = max(0.0, float(-self.pos_ned[2]))
-        chosen_idx = len(self.balls_ned) - 1
-        for i in range(len(self.balls_ned)):
-            ball_alt = float(-self.balls_ned[i, 2])
-            if cur_alt >= ball_alt + 25.0:
-                chosen_idx = i
-                break
-        if chosen_idx != self.active_ball_idx:
-            self.active_ball_idx = chosen_idx
-            self.target_ned = self.balls_ned[self.active_ball_idx].copy()
-            self.target_ne = self.target_ned[:2]
-            self.target_history_ned = [self.target_ned.copy() for _ in range(21)]
-            self.prev_dist_3d = self._compute_dist_3d()
+        self.total_oscillation_penalty = 0.0
 
     def _compute_dist_3d(self) -> float:
         return float(np.linalg.norm(self.target_ned - self.pos_ned))
 
-    def _compute_balls_potential(self) -> float:
-        """
-        Continuous multi-ball proximity potential (balls are NOT collected/deleted!):
-          - For each ball i, closeness score s_i = exp(-min_dist_i / 90.0) in (0, 1].
-          - Cumulative closeness S = sum_i s_i.
-          - Escalating gain: Potential = 350.0 * S + 160.0 * (S ** 2).
-            The more distinct balls the glider gets close to, the steeper the marginal reward multiplier!
-        """
-        closeness = np.exp(-self.ball_min_dists / 90.0)
-        s_tot = float(np.sum(closeness))
-        return 350.0 * s_tot + 160.0 * (s_tot ** 2)
-
     def _get_obs(self) -> np.ndarray:
         p, q, r = self.omega
 
-        # 3D vector from current airframe position (N, E, D) to active 3D target/ball (N_t, E_t, D_t)
+        # Relative target coordinates (target - pos) projected into body frame:
+        # Both unit direction (dir_body) and unclipped distance (dist_3d / 1000.0)
         d_ned = self.target_ned - self.pos_ned
         dist_3d = max(1.0, float(np.linalg.norm(d_ned)))
         dir_body = (self.R_wb.T @ d_ned) / dist_3d
 
-        # Body-frame airspeed components (u, v, w)
+        # Body-frame airspeed components (u, w)
         v_body = self.R_wb.T @ self.vel_ned
 
+        # Circularly normalized INAV attitude (sin_roll, cos_roll, sin_pitch, cos_pitch, sin_yaw, cos_yaw)
+        s_roll, c_roll, s_pitch, c_pitch, s_yaw, c_yaw = compute_inav_circular_attitude(self.R_wb)
+
         # Past Target Positions (5, 10, 15, 20 steps ago = 0.25s, 0.50s, 0.75s, 1.00s ago)
-        # Displacements from current target_ned projected into the missile's 3D Body Frame!
+        # Displacements relative to current target_ned (target(now) - target(past)) in body frame (unclipped!)
         hist_features: List[float] = []
         n_hist = len(self.target_history_ned)
         for k_back, norm_scale in [(5, 6.25), (10, 12.5), (15, 18.75), (20, 25.0)]:
@@ -178,10 +145,9 @@ class GlideGpsTargetEnv(gym.Env):
             past_ned = self.target_history_ned[idx_h] if n_hist > 0 else self.target_ned
             delta_ned = self.target_ned - past_ned
             delta_body = self.R_wb.T @ delta_ned
-            hist_features.append(float(np.clip(delta_body[0] / norm_scale, -3.5, 3.5)))
-            hist_features.append(float(np.clip(delta_body[1] / norm_scale, -3.5, 3.5)))
+            hist_features.append(float(delta_body[0] / norm_scale))
+            hist_features.append(float(delta_body[1] / norm_scale))
 
-        #Also include instantaneous 1-step target displacement (0.05s ago) for ultra-fast reaction to sudden RC car jinks!
         past_1 = self.target_history_ned[max(0, n_hist - 2)] if n_hist > 1 else self.target_ned
         step_delta_body = self.R_wb.T @ ((self.target_ned - past_1) / self.control_dt)
 
@@ -190,17 +156,19 @@ class GlideGpsTargetEnv(gym.Env):
                 float(dir_body[0]),
                 float(dir_body[1]),
                 float(dir_body[2]),
-                np.clip(dist_3d / 1500.0, 0.0, 3.0),
+                dist_3d / 1000.0,
                 float(v_body[0]) / 50.0,
                 float(v_body[2]) / 50.0,
                 float(p) / 10.0,
                 float(q) / 10.0,
                 float(r) / 10.0,
-                float(self.R_wb[2, 0]),
-                float(self.R_wb[2, 1]),
-                float(self.R_wb[2, 2]),
-                np.clip(float(step_delta_body[0]) / 25.0, -3.5, 3.5),
-                np.clip(float(step_delta_body[1]) / 25.0, -3.5, 3.5),
+                s_roll,
+                c_roll,
+                s_pitch,
+                c_pitch,
+                s_yaw,
+                float(step_delta_body[0]) / 25.0,
+                float(step_delta_body[1]) / 25.0,
                 *hist_features,
             ],
             dtype=np.float32,
@@ -227,8 +195,6 @@ class GlideGpsTargetEnv(gym.Env):
             self.pos_ned = np.array([0.0, 0.0, -alt], dtype=np.float64)
             self.vel_ned = self.R_wb @ np.array([spd0, 0.0, 0.0], dtype=np.float64)
         elif self.randomize_drop and not deterministic:
-            # 50% of training episodes start from a random mid-air state (random angle, random speed 12-52 m/s, random altitude 450-1000 m)
-            # to mimic chasing a target when the target suddenly switches to a completely different direction!
             if self.np_random.uniform(0.0, 1.0) < 0.50:
                 alt = float(self.np_random.uniform(450.0, 1000.0))
                 roll0 = float(self.np_random.uniform(-180.0, 180.0))
@@ -257,11 +223,19 @@ class GlideGpsTargetEnv(gym.Env):
             self.pos_ned = np.array([0.0, 0.0, -alt], dtype=np.float64)
             self.vel_ned = np.array([0.0, 0.0, 0.1], dtype=np.float64)
 
+        # Boundary circle diameter = 2 * (alt - 70) -> radius = alt - 70
+        self.current_release_altitude_m = alt
+        self.boundary_radius_m = max(50.0, alt - 70.0)
+
         self.delta_r_deg = 0.0
         self.delta_l_deg = 0.0
         self.last_action = np.zeros(2, dtype=np.float32)
+        self.prev_action = np.zeros(2, dtype=np.float32)
+        self.prev_omega = self.omega.copy()
+        self.prev_domega = np.zeros(3, dtype=np.float64)
         self.step_count = 0
         self.total_distance_closed_m = 0.0
+        self.total_oscillation_penalty = 0.0
         self.target_turn_rate_rads = 0.0
         self.target_turn_freq = 0.0
 
@@ -270,43 +244,6 @@ class GlideGpsTargetEnv(gym.Env):
             self.target_ned = np.array([t_ne[0], t_ne[1], 0.0], dtype=np.float64)
             self.target_ne = self.target_ned[:2]
             self.target_vel_ne = np.array(options.get("target_vel_ne", [0.0, 0.0]), dtype=np.float64)
-            self.balls_ned = self.target_ned.reshape(1, 3).copy()
-            self.ball_min_dists = np.array([self._compute_dist_3d()], dtype=np.float64)
-        elif self.target_mode == "balls_3d":
-            # Spawn 4 air balls in ALL 4 QUADRANTS (+N/+E, -N/+E, -N/-E, +N/-E) + 1 final ground ball!
-            alt_levels = [760.0, 560.0, 360.0, 180.0, 0.0]
-            balls = []
-            if deterministic:
-                offsets = [
-                    (+130.0, +130.0),  # Quadrant I (+N, +E)
-                    (-140.0, +160.0),  # Quadrant II (-N, +E)
-                    (-220.0, -180.0),  # Quadrant III (-N, -E)
-                    (+260.0, -220.0),  # Quadrant IV (+N, -E)
-                    (+460.0, +160.0),  # Final Ground Ball
-                ]
-                for (bn, be), ba in zip(offsets, alt_levels):
-                    balls.append([bn, be, -ba])
-            else:
-                # Place each ball in a different quadrant around the origin (0, 0) so all 4 quadrants are covered!
-                quad_signs = [(+1.0, +1.0), (-1.0, +1.0), (-1.0, -1.0), (+1.0, -1.0)]
-                perm_q = self.np_random.permutation(4)
-                for q_i in range(4):
-                    sn, se = quad_signs[int(perm_q[q_i])]
-                    r_b = float(self.np_random.uniform(110.0 + 45.0 * q_i, 190.0 + 65.0 * q_i))
-                    ang_b = float(self.np_random.uniform(0.25, 1.32))
-                    balls.append([sn * r_b * np.cos(ang_b), se * r_b * np.sin(ang_b), -alt_levels[q_i]])
-                # Final ground ball anywhere 360 deg at radius 220..650 m
-                r_g = float(self.np_random.uniform(220.0, 650.0))
-                az_g = float(self.np_random.uniform(-np.pi, np.pi))
-                balls.append([r_g * np.cos(az_g), r_g * np.sin(az_g), 0.0])
-            self.balls_ned = np.array(balls, dtype=np.float64)
-            self.active_ball_idx = 0
-            self.target_ned = self.balls_ned[0].copy()
-            self.target_ne = self.target_ned[:2]
-            self.target_vel_ne = np.zeros(2, dtype=np.float64)
-            dists0 = np.linalg.norm(self.balls_ned - self.pos_ned.reshape(1, 3), axis=1)
-            self.ball_min_dists = dists0.copy()
-            self.prev_ball_potential = self._compute_balls_potential()
         elif deterministic:
             if self.target_mode == "static":
                 self.target_ned = np.array([680.0, 240.0, 0.0], dtype=np.float64)
@@ -319,30 +256,25 @@ class GlideGpsTargetEnv(gym.Env):
                     [self.target_speed_ms * np.cos(self.target_hdg_rad), self.target_speed_ms * np.sin(self.target_hdg_rad)],
                     dtype=np.float64,
                 )
-            else:  # "curved" or "aggressive" — Curved Moving Target at high speed!
+            else:
                 self.target_ned = np.array([500.0, -240.0, 0.0], dtype=np.float64)
                 self.target_speed_ms = 14.0
                 self.target_hdg_rad = 1.25
-                self.target_turn_rate_rads = 0.095  # smooth curved arc / S-turn
-                self.target_turn_freq = 0.16
+                self.target_turn_rate_rads = 0.095
+                self.target_turn_freq = 0.14
                 self.target_vel_ne = np.array(
                     [self.target_speed_ms * np.cos(self.target_hdg_rad), self.target_speed_ms * np.sin(self.target_hdg_rad)],
                     dtype=np.float64,
                 )
             self.target_ne = self.target_ned[:2]
-            self.balls_ned = self.target_ned.reshape(1, 3).copy()
-            self.ball_min_dists = np.array([self._compute_dist_3d()], dtype=np.float64)
         else:
             if self.target_mode == "static":
-                max_reach = min(920.0, alt * 0.92)
-                r_init = float(self.np_random.uniform(50.0, max_reach))
+                r_init = float(self.np_random.uniform(50.0, self.boundary_radius_m))
                 az_init = float(self.np_random.uniform(-np.pi, np.pi))
                 self.target_ned = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init), 0.0], dtype=np.float64)
                 self.target_vel_ne = np.zeros(2, dtype=np.float64)
             elif self.target_mode == "linear":
-                # Linear moving target at different speeds (4 m/s to 20 m/s) across all 4 quadrants!
-                max_reach = min(680.0, alt * 0.68)
-                r_init = float(self.np_random.uniform(120.0, max_reach))
+                r_init = float(self.np_random.uniform(120.0, min(self.boundary_radius_m * 0.75, 680.0)))
                 az_init = float(self.np_random.uniform(-np.pi, np.pi))
                 self.target_ned = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init), 0.0], dtype=np.float64)
                 self.target_speed_ms = float(self.np_random.uniform(4.0, 20.0))
@@ -352,9 +284,8 @@ class GlideGpsTargetEnv(gym.Env):
                     [self.target_speed_ms * np.cos(self.target_hdg_rad), self.target_speed_ms * np.sin(self.target_hdg_rad)],
                     dtype=np.float64,
                 )
-            else:  # "curved" or "aggressive" — Curved Moving Target across all 4 quadrants!
-                max_reach = min(650.0, alt * 0.65)
-                r_init = float(self.np_random.uniform(120.0, max_reach))
+            else:
+                r_init = float(self.np_random.uniform(120.0, min(self.boundary_radius_m * 0.70, 650.0)))
                 az_init = float(self.np_random.uniform(-np.pi, np.pi))
                 self.target_ned = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init), 0.0], dtype=np.float64)
                 self.target_speed_ms = float(self.np_random.uniform(8.0, 20.0))
@@ -367,10 +298,7 @@ class GlideGpsTargetEnv(gym.Env):
                     dtype=np.float64,
                 )
             self.target_ne = self.target_ned[:2]
-            self.balls_ned = self.target_ned.reshape(1, 3).copy()
-            self.ball_min_dists = np.array([self._compute_dist_3d()], dtype=np.float64)
 
-        # Pre-populate 21 steps (1.00 s) of target position history so even at step 0 the past trajectory is well-defined
         self.target_history_ned = []
         for h_i in range(20, -1, -1):
             dt_back = h_i * self.control_dt
@@ -494,9 +422,7 @@ class GlideGpsTargetEnv(gym.Env):
         self.step_count += 1
         t_sec = self.step_count * self.control_dt
 
-        # Update moving target position in "linear" or "curved"/"aggressive" modes
         if self.target_mode in ("curved", "aggressive"):
-            # Curved moving target: heading rotates continuously (circular arc + sinusoidal S-curve modulation)
             inst_turn = self.target_turn_rate_rads * np.cos(self.target_turn_freq * t_sec)
             self.target_hdg_rad += inst_turn * self.control_dt
             self.target_vel_ne[0] = self.target_speed_ms * np.cos(self.target_hdg_rad)
@@ -505,14 +431,11 @@ class GlideGpsTargetEnv(gym.Env):
         if self.target_mode in ("linear", "curved", "aggressive"):
             self.target_ned[0] += self.target_vel_ne[0] * self.control_dt
             self.target_ned[1] += self.target_vel_ne[1] * self.control_dt
-            if self.target_ned[0] < -1150.0 or self.target_ned[0] > 1150.0:
-                self.target_vel_ne[0] *= -1.0
+            r_t = float(np.hypot(self.target_ned[0], self.target_ned[1]))
+            if r_t > self.boundary_radius_m:
+                self.target_ned[:2] *= self.boundary_radius_m / r_t
+                self.target_vel_ne *= -1.0
                 self.target_hdg_rad = float(np.arctan2(self.target_vel_ne[1], self.target_vel_ne[0]))
-                self.target_ned[0] = np.clip(self.target_ned[0], -1150.0, 1150.0)
-            if self.target_ned[1] < -1150.0 or self.target_ned[1] > 1150.0:
-                self.target_vel_ne[1] *= -1.0
-                self.target_hdg_rad = float(np.arctan2(self.target_vel_ne[1], self.target_vel_ne[0]))
-                self.target_ned[1] = np.clip(self.target_ned[1], -1150.0, 1150.0)
             self.target_ne = self.target_ned[:2]
             self.prev_dist_3d = self._compute_dist_3d()
 
@@ -533,50 +456,49 @@ class GlideGpsTargetEnv(gym.Env):
                 self.pos_ned[2] = 0.0
                 break
             self._step_physics_substep(cmd_r_deg, cmd_l_deg, sub_dt)
-            if self.target_mode == "balls_3d":
-                dists = np.linalg.norm(self.balls_ned - self.pos_ned.reshape(1, 3), axis=1)
-                self.ball_min_dists = np.minimum(self.ball_min_dists, dists)
         step_path_len = float(np.linalg.norm(self.pos_ned - prev_pos_step))
         self.total_path_length_m += step_path_len
 
-        if self.target_mode == "balls_3d":
-            # Escalating multi-ball closeness reward (balls are NOT collected/deleted!)
-            cur_pot = self._compute_balls_potential()
-            pot_gain = cur_pot - self.prev_ball_potential
-            self.prev_ball_potential = cur_pot
+        cur_dist_3d = self._compute_dist_3d()
+        cur_dist_2d = float(
+            np.hypot(self.target_ned[0] - self.pos_ned[0], self.target_ned[1] - self.pos_ned[1])
+        )
+        dist_dec = self.prev_dist_3d - cur_dist_3d
+        self.prev_dist_3d = cur_dist_3d
+        self.total_distance_closed_m += dist_dec
 
-            cur_dist_3d = self._compute_dist_3d()
-            dist_dec = self.prev_dist_3d - cur_dist_3d
-            self.prev_dist_3d = cur_dist_3d
-            self.total_distance_closed_m += dist_dec
+        # Anti-Oscillation / Vibration Penalty (penalizes rapid control sign reversals / jerk, NOT smooth turns!):
+        da_cur = act - self.last_action
+        da_prev = self.last_action - self.prev_action
+        sign_flip_mask = (da_cur * da_prev < -1e-4).astype(np.float32)
+        action_oscillation = float(np.sum(sign_flip_mask * ((da_cur - da_prev) ** 2)))
 
-            closeness_sum = float(np.sum(np.exp(-self.ball_min_dists / 90.0)))
-            multiplier = 1.0 + 0.60 * closeness_sum
-            reward = pot_gain + 4.0 * multiplier * dist_dec
-            self._select_active_ball()
-        else:
-            cur_dist_3d = self._compute_dist_3d()
-            cur_dist_2d = float(
-                np.hypot(self.target_ned[0] - self.pos_ned[0], self.target_ned[1] - self.pos_ned[1])
-            )
-            dist_dec = self.prev_dist_3d - cur_dist_3d
-            self.prev_dist_3d = cur_dist_3d
-            self.total_distance_closed_m += dist_dec
+        domega = self.omega - self.prev_omega
+        omega_flip_mask = (domega * self.prev_domega < -1e-3).astype(np.float64)
+        rate_oscillation = float(np.sum(omega_flip_mask * ((domega - self.prev_domega) ** 2))) * 0.02
 
-            # --- Shortest-Path Efficiency + Sub-3m Precision Reward ---
-            # 1. Reward closing 3D distance along the shortest 3D Euclidean line, penalized by wasted detour path (step_path_len - dist_dec)
-            wasted_detour = max(0.0, step_path_len - max(0.0, dist_dec))
-            reward = 6.0 * dist_dec - 1.5 * wasted_detour
-            if -self.pos_ned[2] <= 0.0:
-                path_eff = min(1.0, self.initial_dist_3d / max(1.0, self.total_path_length_m))
-                # Massive sub-3m precision bonus + shortest-path efficiency multiplier on landing!
-                sub_3m_bonus = 2500.0 * float(np.exp(-((cur_dist_2d / 3.0) ** 2)))
-                reward += (max(0.0, 1500.0 - 10.0 * cur_dist_2d) + sub_3m_bonus) * (0.5 + 0.5 * path_eff)
+        osc_penalty = 2.5 * action_oscillation + rate_oscillation
+        self.total_oscillation_penalty += osc_penalty
+
+        self.prev_action = self.last_action.copy()
+        self.last_action = act.copy()
+        self.prev_domega = domega.copy()
+        self.prev_omega = self.omega.copy()
+
+        # Step reward: distance closing minus oscillation penalty (with light detour penalty)
+        wasted_detour = max(0.0, step_path_len - max(0.0, dist_dec))
+        reward = 6.0 * dist_dec - 0.35 * wasted_detour - osc_penalty
 
         hit_ground = bool(-self.pos_ned[2] <= 0.0)
+        if hit_ground:
+            # End-of-flight evaluation: overwhelming weight on <= 3.0 m target hit accuracy!
+            path_eff = min(1.0, self.initial_dist_3d / max(1.0, self.total_path_length_m))
+            hit_bonus = 6000.0 * float(np.exp(-((cur_dist_2d / self.hit_radius_m) ** 2)))
+            near_bonus = max(0.0, 1500.0 - 15.0 * cur_dist_2d)
+            reward += (hit_bonus + near_bonus) * (0.85 + 0.15 * path_eff) - 0.5 * self.total_oscillation_penalty
+
         terminated = hit_ground
         truncated = bool(self.step_count >= self.max_steps)
-        self.last_action = act.copy()
 
         return self._get_obs(), float(reward), terminated, truncated, self.get_info()
 
@@ -588,7 +510,6 @@ class GlideGpsTargetEnv(gym.Env):
         )
         alt_m = float(max(0.0, -self.pos_ned[2]))
         airspeed = float(np.linalg.norm(self.vel_ned))
-        closeness_scores = np.exp(-self.ball_min_dists / 90.0)
         path_eff = min(1.0, self.initial_dist_3d / max(1.0, self.total_path_length_m))
         return {
             "step": int(self.step_count),
@@ -603,9 +524,11 @@ class GlideGpsTargetEnv(gym.Env):
             "target_vx_ms": round(float(self.target_vel_ne[0]), 2),
             "target_vy_ms": round(float(self.target_vel_ne[1]), 2),
             "target_error_m": round(target_err, 2),
+            "hit": bool(alt_m <= 0.1 and target_err <= self.hit_radius_m),
+            "boundary_radius_m": round(float(self.boundary_radius_m), 1),
+            "boundary_diameter_m": round(float(2.0 * self.boundary_radius_m), 1),
             "shortest_path_efficiency": round(float(path_eff), 4),
-            "mean_ball_min_dist_m": round(float(np.mean(self.ball_min_dists)), 2),
-            "cumulative_ball_closeness": round(float(np.sum(closeness_scores)), 2),
+            "total_oscillation_penalty": round(float(self.total_oscillation_penalty), 3),
             "total_distance_closed_m": round(float(self.total_distance_closed_m), 2),
             "airspeed_ms": round(airspeed, 2),
             "roll_deg": round(float(roll_deg), 2),

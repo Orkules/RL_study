@@ -13,6 +13,7 @@ from sim.aero_glide_sim import (
     integrate_rotation_so3,
     rotation_matrix_to_euler,
 )
+from sim.glide_gps_env import compute_inav_circular_attitude
 from sim.wing_linkage import (
     LinkageGeometry,
     MAX_WING_FLAP_DEG,
@@ -25,13 +26,12 @@ class EvaderCarConfig:
     """
     Realistic Ackermann Kinematic-Dynamic Bicycle Model for the Evasive Car:
       - Wheelbase L = 2.65 m, track width W = 1.56 m
-      - Max front-wheel steering angle delta_max = 30.0 deg (0.5236 rad) -> minimum turning radius R_min = L / tan(30 deg) = 4.59 m
-      - Max steering rack rate = 50.0 deg/s (0.8727 rad/s) + steering lag tau_steer = 0.18 s (no instant wheel snapping)
-      - Forward-only driving (v >= 0.0 m/s): braking decelerates to 0.0 m/s, never instant reverse!
-      - Realistic engine forward acceleration a_accel_max = 4.8 m/s^2 (0-100 km/h in ~5.8 s, tapering with speed & drag)
-      - Realistic hydraulic braking deceleration a_brake_max = 8.0 m/s^2
-      - Tire cornering lateral grip limit a_lat_max = 0.92 * 9.81 = 9.03 m/s^2 (forces realistic turning radius R >= v^2 / a_lat_max)
-      - Hit capture radius = 48.0 m on the ground
+      - Max front-wheel steering angle delta_max = 30.0 deg (0.5236 rad) -> R_min = 4.59 m
+      - Max steering rack rate = 50.0 deg/s + steering lag tau_steer = 0.18 s
+      - Forward-only driving (v >= 0.0 m/s): braking decelerates to 0.0 m/s, never instant reverse
+      - Realistic engine forward acceleration a_accel_max = 4.8 m/s^2, braking a_brake_max = 8.0 m/s^2
+      - Tire cornering lateral grip limit a_lat_max = 0.92 * 9.81 = 9.03 m/s^2
+      - Strict target hit capture radius = 3.0 m on the ground
     """
 
     wheelbase_m: float = 2.65
@@ -44,28 +44,16 @@ class EvaderCarConfig:
     drag_coeff: float = 0.0022
     rolling_resist_ms2: float = 0.18
     steer_tau_s: float = 0.18
-    hit_radius_m: float = 48.0
+    hit_radius_m: float = 3.0
 
 
 class PursuitEvasionAdversarialEnv(gym.Env):
     """
-    Two-Agent Competitive Zero-Sum Pursuit-Evasion Environment:
-      - Pursuer (Missile / Glider): 300 g Delta-Wing Airframe dropped from 1,000 m altitude.
-          * Observation (14D Orientation-Free 3D Body Frame):
-            [dir_bx, dir_by, dir_bz, dist_3d/1500, u/50, w/50, p/10, q/10, r/10, g_bx, g_by, g_bz, car_vx_b/35, car_vy_b/35]
-          * Action (2D): [pitch_flap_cmd, roll_flap_cmd] in [-1, +1]
-      - Evader (Car on the Ground): Ackermann Kinematic-Dynamic Bicycle Model with configurable top speed (50 km/h -> 300 km/h).
-          * Observation (16D Car-Centric Frame — knows Missile Position, Direction, Speed, and Attitude!):
-            0..2 : Relative 3D position of Missile in Car frame (rel_x_car/1000, rel_y_car/1000, alt_m/1000)
-            3..5 : Missile 3D velocity (direction & speed) in Car frame (mv_x_car/60, mv_y_car/60, mv_z_down/60)
-            6    : Missile total airspeed V_missile / 60.0
-            7..9 : Missile 3D Nose Attitude unit vector (R_wb[:,0]) projected into Car frame (nose_x_car, nose_y_car, nose_z_down)
-            10..11: Missile 3D Belly Attitude unit vector (R_wb[:,2]) projected into Car frame (belly_x_car, belly_y_car)
-            12   : Car current speed v_car / 85.0 (normalized up to 306 km/h)
-            13   : Car current steering angle delta / max_steer_rad in [-1, +1]
-            14   : Car top speed limit v_max / 85.0
-            15   : Estimated time-to-impact t_go / 30.0
-          * Action (2D): [steer_cmd, throttle_brake_cmd] in [-1, +1]
+    Two-Agent Competitive Pursuit-Evasion Environment:
+      - Boundary Circle around origin (0, 0): Diameter = 2 * (altitude - 70 m), i.e. Radius = altitude - 70 m.
+      - Strict Hit Threshold: hit_radius_m = 3.0 m (anything > 3.0 m is a Miss (0)).
+      - Pursuer (Missile / Glider): 24D Observation (Relative Target Coordinates + Circular INAV Attitude + Gyro + Past Target Displacements, unclipped).
+      - Evader (Ackermann Car on Ground): 16D Observation in Car Frame (knows Missile Position, Velocity, and Attitude).
     """
 
     metadata = {"render_modes": ["dict"], "render_fps": 20}
@@ -88,11 +76,10 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.car_cfg = EvaderCarConfig()
         self.geom = LinkageGeometry()
 
-        self.missile_observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(22,), dtype=np.float32)
+        self.missile_observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(24,), dtype=np.float32)
         self.car_observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(16,), dtype=np.float32)
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
 
-        # Missile 6-DOF State
         self.R_wb = np.eye(3, dtype=np.float64)
         self.angles = np.zeros(3, dtype=np.float64)
         self.omega = np.zeros(3, dtype=np.float64)
@@ -100,8 +87,15 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.vel_ned = np.zeros(3, dtype=np.float64)
         self.delta_r_deg = 0.0
         self.delta_l_deg = 0.0
+        self.last_m_action = np.zeros(2, dtype=np.float32)
+        self.prev_m_action = np.zeros(2, dtype=np.float32)
+        self.prev_omega = np.zeros(3, dtype=np.float64)
+        self.prev_domega = np.zeros(3, dtype=np.float64)
+        self.total_oscillation_penalty = 0.0
 
-        # Car State on Ground (North_m, East_m, heading_yaw_rad, speed_ms, steer_rad, vel_N, vel_E)
+        self.current_release_altitude_m = self.release_altitude_m
+        self.boundary_radius_m = max(50.0, self.release_altitude_m - 70.0)
+
         self.car_pos_ne = np.array([280.0, -180.0], dtype=np.float64)
         self.car_spawn_center = self.car_pos_ne.copy()
         self.car_yaw = 0.0
@@ -137,9 +131,8 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         dist_3d = max(1.0, float(np.linalg.norm(d_ned)))
         dir_body = (self.R_wb.T @ d_ned) / dist_3d
         v_body = self.R_wb.T @ self.vel_ned
+        s_roll, c_roll, s_pitch, c_pitch, s_yaw, _ = compute_inav_circular_attitude(self.R_wb)
 
-        # Past Car Positions (5, 10, 15, 20 steps ago = 0.25s, 0.50s, 0.75s, 1.00s ago)
-        # Displacements from current car position projected into the missile's 3D Body Frame!
         hist_features: list[float] = []
         n_hist = len(self.target_history_ned)
         for k_back, norm_scale in [(5, 6.25), (10, 12.5), (15, 18.75), (20, 25.0)]:
@@ -147,8 +140,8 @@ class PursuitEvasionAdversarialEnv(gym.Env):
             past_ned = self.target_history_ned[idx_h] if n_hist > 0 else cur_car_ned
             delta_ned = cur_car_ned - past_ned
             delta_body = self.R_wb.T @ delta_ned
-            hist_features.append(float(np.clip(delta_body[0] / norm_scale, -3.5, 3.5)))
-            hist_features.append(float(np.clip(delta_body[1] / norm_scale, -3.5, 3.5)))
+            hist_features.append(float(delta_body[0] / norm_scale))
+            hist_features.append(float(delta_body[1] / norm_scale))
 
         past_1 = self.target_history_ned[max(0, n_hist - 2)] if n_hist > 1 else cur_car_ned
         step_delta_body = self.R_wb.T @ ((cur_car_ned - past_1) / self.control_dt)
@@ -158,43 +151,38 @@ class PursuitEvasionAdversarialEnv(gym.Env):
                 float(dir_body[0]),
                 float(dir_body[1]),
                 float(dir_body[2]),
-                np.clip(dist_3d / 1500.0, 0.0, 3.0),
+                dist_3d / 1000.0,
                 float(v_body[0]) / 50.0,
                 float(v_body[2]) / 50.0,
                 float(p) / 10.0,
                 float(q) / 10.0,
                 float(r) / 10.0,
-                float(self.R_wb[2, 0]),
-                float(self.R_wb[2, 1]),
-                float(self.R_wb[2, 2]),
-                np.clip(float(step_delta_body[0]) / 25.0, -3.5, 3.5),
-                np.clip(float(step_delta_body[1]) / 25.0, -3.5, 3.5),
+                s_roll,
+                c_roll,
+                s_pitch,
+                c_pitch,
+                s_yaw,
+                float(step_delta_body[0]) / 25.0,
+                float(step_delta_body[1]) / 25.0,
                 *hist_features,
             ],
             dtype=np.float32,
         )
 
     def get_car_obs(self) -> np.ndarray:
-        """
-        16D Car Evader Observation in the Car's Local Coordinate Frame (Forward = cos(car_yaw), Right = sin(car_yaw)):
-          Includes full Missile 3D Position, 3D Velocity (Direction & Speed), and 3D Attitude (Nose & Belly vectors)!
-        """
         cy, sy = float(np.cos(self.car_yaw)), float(np.sin(self.car_yaw))
 
-        # 1. Missile Position relative to Car in Car Frame
         d_n = float(self.pos_ned[0] - self.car_pos_ne[0])
         d_e = float(self.pos_ned[1] - self.car_pos_ne[1])
         alt_m = max(0.0, float(-self.pos_ned[2]))
         rel_x_car = cy * d_n + sy * d_e
         rel_y_car = -sy * d_n + cy * d_e
 
-        # 2. Missile Velocity (Direction & Speed) in Car Frame
         mv_n, mv_e, mv_d = float(self.vel_ned[0]), float(self.vel_ned[1]), float(self.vel_ned[2])
         mv_x_car = cy * mv_n + sy * mv_e
         mv_y_car = -sy * mv_n + cy * mv_e
         missile_speed = float(np.linalg.norm(self.vel_ned))
 
-        # 3. Missile 3D Attitude (Nose axis R_wb[:,0] and Belly axis R_wb[:,2]) projected into Car Frame
         nose_n, nose_e, nose_d = float(self.R_wb[0, 0]), float(self.R_wb[1, 0]), float(self.R_wb[2, 0])
         nose_x_car = cy * nose_n + sy * nose_e
         nose_y_car = -sy * nose_n + cy * nose_e
@@ -203,19 +191,18 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         belly_x_car = cy * belly_n + sy * belly_e
         belly_y_car = -sy * belly_n + cy * belly_e
 
-        # 4. Car own state & estimated time-to-impact
         max_steer_rad = np.deg2rad(self.car_cfg.max_steer_deg)
-        vz_down = max(10.0, mv_d)
-        t_go = min(30.0, alt_m / vz_down)
+        r_car_origin = float(np.hypot(self.car_pos_ne[0], self.car_pos_ne[1]))
+        boundary_margin_norm = (self.boundary_radius_m - r_car_origin) / max(100.0, self.boundary_radius_m)
 
         return np.array(
             [
-                np.clip(rel_x_car / 1000.0, -3.0, 3.0),
-                np.clip(rel_y_car / 1000.0, -3.0, 3.0),
+                rel_x_car / 1000.0,
+                rel_y_car / 1000.0,
                 alt_m / 1000.0,
-                np.clip(mv_x_car / 60.0, -2.0, 2.0),
-                np.clip(mv_y_car / 60.0, -2.0, 2.0),
-                np.clip(mv_d / 60.0, -2.0, 2.0),
+                mv_x_car / 60.0,
+                mv_y_car / 60.0,
+                mv_d / 60.0,
                 missile_speed / 60.0,
                 nose_x_car,
                 nose_y_car,
@@ -225,7 +212,7 @@ class PursuitEvasionAdversarialEnv(gym.Env):
                 self.car_speed / 85.0,
                 float(self.car_steer / max_steer_rad),
                 self.car_max_speed_ms / 85.0,
-                t_go / 30.0,
+                boundary_margin_norm,
             ],
             dtype=np.float32,
         )
@@ -251,28 +238,36 @@ class PursuitEvasionAdversarialEnv(gym.Env):
             roll0, pitch0, yaw0 = 0.0, -89.5, 0.0
             self.omega = np.zeros(3, dtype=np.float64)
 
+        self.current_release_altitude_m = alt
+        # Circle boundary: Diameter = 2 * (altitude - 70 m) -> Radius = altitude - 70 m
+        self.boundary_radius_m = max(50.0, alt - 70.0)
+
         self.angles = np.deg2rad([roll0, pitch0, yaw0])
         self.R_wb = euler_to_rotation_matrix(self.angles[0], self.angles[1], self.angles[2])
         self.pos_ned = np.array([0.0, 0.0, -alt], dtype=np.float64)
         self.vel_ned = np.array([0.0, 0.0, 0.1], dtype=np.float64)
         self.delta_r_deg = 0.0
         self.delta_l_deg = 0.0
+        self.last_m_action = np.zeros(2, dtype=np.float32)
+        self.prev_m_action = np.zeros(2, dtype=np.float32)
+        self.prev_omega = self.omega.copy()
+        self.prev_domega = np.zeros(3, dtype=np.float64)
+        self.total_oscillation_penalty = 0.0
 
-        # Initialize Car position & velocity across all 4 quadrants at realistic ground distances (150 m to 550 m)!
         if "car_pos_ne" in options:
             self.car_pos_ne = np.array(options["car_pos_ne"], dtype=np.float64)
             self.car_yaw = float(options.get("car_yaw", 0.0))
-            self.car_speed = float(options.get("car_speed", 0.5 * self.car_max_speed_ms))
+            self.car_speed = float(options.get("car_speed", 0.65 * self.car_max_speed_ms))
         elif deterministic:
             self.car_pos_ne = np.array([280.0, -180.0], dtype=np.float64)
             self.car_yaw = 1.25
             self.car_speed = 0.65 * self.car_max_speed_ms
         else:
-            r_init = float(self.np_random.uniform(140.0, 520.0))
+            r_init = float(self.np_random.uniform(80.0, self.boundary_radius_m * 0.65))
             az_init = float(self.np_random.uniform(-np.pi, np.pi))
             self.car_pos_ne = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init)], dtype=np.float64)
             self.car_yaw = float(self.np_random.uniform(-np.pi, np.pi))
-            self.car_speed = float(self.np_random.uniform(0.3, 0.85)) * self.car_max_speed_ms
+            self.car_speed = float(self.np_random.uniform(0.4, 0.85)) * self.car_max_speed_ms
         self.car_spawn_center = self.car_pos_ne.copy()
 
         self.car_steer = 0.0
@@ -304,15 +299,11 @@ class PursuitEvasionAdversarialEnv(gym.Env):
 
     def _step_car_substep(self, steer_cmd: float, throttle_cmd: float, sub_dt: float) -> None:
         """
-        Realistic Ackermann Bicycle Model with Forward-Only Drivetrain, Steer-Rate Limit, and Tire Lateral Grip Limit:
-          - steer_cmd in [-1, +1] -> target front wheel angle delta (limited by max_steer_deg, steer_tau_s, and max_steer_rate_degs)
-          - Speed-dependent Ackermann steering limit: delta_eff_max = min(delta_max, arctan(L * a_lat_max / v^2))
-          - throttle_cmd in [-1, +1] -> engine forward acceleration (>0, tapering at high speed) or hydraulic braking (<0, down to 0 m/s)
-          - Forward-only velocity (v >= 0.0 m/s): the car NEVER reverses or oscillates back-and-forth!
+        Realistic Ackermann Bicycle Model bounded ONLY by the circle of diameter = 2 * (altitude - 70 m)
+        centered at origin (0, 0) (radius = self.boundary_radius_m = altitude - 70 m).
         """
         max_steer_rad = np.deg2rad(self.car_cfg.max_steer_deg)
         max_lat_acc = self.car_cfg.max_lat_g * 9.81
-        # Speed-dependent maximum Ackermann steering angle so tires don't exceed lateral grip limit
         if self.car_speed > 2.5:
             speed_steer_limit = float(np.arctan((self.car_cfg.wheelbase_m * max_lat_acc) / (self.car_speed ** 2)))
             eff_max_steer = min(max_steer_rad, speed_steer_limit)
@@ -327,23 +318,19 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.car_steer = float(np.clip(self.car_steer, -eff_max_steer, eff_max_steer))
 
         if throttle_cmd >= 0.0:
-            # Engine power curve tapers smoothly as speed approaches top speed
             speed_ratio = float(np.clip(self.car_speed / max(5.0, self.car_max_speed_ms), 0.0, 1.0))
             power_taper = max(0.20, 1.0 - 0.55 * (speed_ratio ** 1.4))
             lon_acc = float(throttle_cmd) * self.car_cfg.max_accel_ms2 * power_taper
         else:
             lon_acc = float(throttle_cmd) * self.car_cfg.max_brake_ms2
 
-        # Aerodynamic drag + rolling resistance + cornering scrub drag
         drag_acc = (
             self.car_cfg.drag_coeff * (self.car_speed ** 2)
             + (self.car_cfg.rolling_resist_ms2 if self.car_speed > 0.05 else 0.0)
             + 0.35 * abs(np.tan(self.car_steer)) * (self.car_speed / max(10.0, self.car_max_speed_ms))
         )
-        # Forward-only car: speed is strictly in [0.0, car_max_speed_ms] (no instant reverse!)
         self.car_speed = float(np.clip(self.car_speed + (lon_acc - drag_acc) * sub_dt, 0.0, self.car_max_speed_ms))
 
-        # Exact Ackermann bicycle turning curvature kappa = tan(delta) / L with CG slip angle beta = arctan(0.5 * tan(delta))
         beta_slip = float(np.arctan(0.5 * np.tan(self.car_steer)))
         yaw_rate = (self.car_speed / self.car_cfg.wheelbase_m) * np.tan(self.car_steer) * np.cos(beta_slip)
         if self.car_speed > 1.0:
@@ -356,17 +343,15 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.car_vel_ne[1] = self.car_speed * np.sin(course_ang)
         self.car_pos_ne += self.car_vel_ne * sub_dt
 
-        # Large RC car circuit zone (radius 85 m around car_spawn_center = 170 m diameter track):
-        # Smooth Ackermann bank inward when approaching the 85 m track perimeter so the car drives continuous forward circuits without ever stopping or teleporting!
-        rel_c = self.car_pos_ne - self.car_spawn_center
-        r_car = float(np.hypot(rel_c[0], rel_c[1]))
-        if r_car > 70.0:
-            inward_yaw = float(np.arctan2(-rel_c[1], -rel_c[0]))
+        # Enforce ONLY the outer boundary circle around (0, 0) with radius = altitude - 70 m (diameter = 2*(altitude - 70 m))
+        r_origin = float(np.hypot(self.car_pos_ne[0], self.car_pos_ne[1]))
+        if r_origin > self.boundary_radius_m - 25.0:
+            inward_yaw = float(np.arctan2(-self.car_pos_ne[1], -self.car_pos_ne[0]))
             yaw_diff = float((inward_yaw - self.car_yaw + np.pi) % (2.0 * np.pi) - np.pi)
             turn_rate_in = min(max_lat_acc / max(2.5, self.car_speed), 1.8)
             self.car_yaw = float((self.car_yaw + turn_rate_in * sub_dt * np.sign(yaw_diff) + np.pi) % (2.0 * np.pi) - np.pi)
-            if r_car > 85.0:
-                self.car_pos_ne = self.car_spawn_center + rel_c * (85.0 / r_car)
+            if r_origin > self.boundary_radius_m:
+                self.car_pos_ne *= self.boundary_radius_m / r_origin
 
     def _step_missile_substep(self, cmd_r_deg: float, cmd_l_deg: float, sub_dt: float) -> None:
         alpha_s = sub_dt / (self.aero_cfg.servo_tau_s + sub_dt)
@@ -503,6 +488,21 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         dist_dec = self.prev_dist_3d - cur_dist_3d
         self.prev_dist_3d = cur_dist_3d
 
+        # Anti-Oscillation / Vibration Penalty for Missile:
+        da_cur = m_act - self.last_m_action
+        da_prev = self.last_m_action - self.prev_m_action
+        sign_flip_mask = (da_cur * da_prev < -1e-4).astype(np.float32)
+        action_osc = float(np.sum(sign_flip_mask * ((da_cur - da_prev) ** 2)))
+        domega = self.omega - self.prev_omega
+        omega_flip = (domega * self.prev_domega < -1e-3).astype(np.float64)
+        rate_osc = float(np.sum(omega_flip * ((domega - self.prev_domega) ** 2))) * 0.02
+        osc_penalty = 2.5 * action_osc + rate_osc
+        self.total_oscillation_penalty += osc_penalty
+        self.prev_m_action = self.last_m_action.copy()
+        self.last_m_action = m_act.copy()
+        self.prev_domega = domega.copy()
+        self.prev_omega = self.omega.copy()
+
         # Spatial Exploration / New-Area Bonus for the Car (12 m x 12 m grid cells + expanding radius from spawn):
         cell_xy = (int(np.floor(self.car_pos_ne[0] / 12.0)), int(np.floor(self.car_pos_ne[1] / 12.0)))
         new_area_bonus = 0.0
@@ -515,7 +515,6 @@ class PursuitEvasionAdversarialEnv(gym.Env):
             new_area_bonus += 1.5 * (spawn_disp - self.max_spawn_displacement_m)
             self.max_spawn_displacement_m = spawn_disp
 
-        # Missile predicted ground impact point (linear ballistic projection to z=0) & car orthogonal evasion velocity:
         alt_m = max(1.0, float(-self.pos_ned[2]))
         vz_down = max(8.0, float(self.vel_ned[2]))
         t_imp = min(20.0, alt_m / vz_down)
@@ -525,10 +524,7 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         forward_speed_bonus = 0.8 * (self.car_speed / max(5.0, self.car_max_speed_ms))
         stagnation_penalty = -1.5 if self.car_speed < 0.20 * self.car_max_speed_ms else 0.0
 
-        # Competitive Rewards:
-        # Missile is rewarded for decreasing 3D distance and hitting the car;
-        # Car is rewarded for exploring new area, maintaining forward Ackermann speed, and increasing distance from the missile's predicted impact point!
-        missile_reward = 5.0 * dist_dec
+        missile_reward = 5.0 * dist_dec - osc_penalty
         car_reward = (
             -2.0 * dist_dec
             + new_area_bonus
@@ -538,15 +534,16 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         )
 
         hit_ground = bool(-self.pos_ned[2] <= 0.0)
+        # Strict 3.0 m hit definition (anything > 3.0 m is a Miss (0)!)
         hit_car = bool(hit_ground and cur_dist_2d <= self.car_cfg.hit_radius_m)
         terminated = hit_ground
         if terminated:
             if hit_car:
-                missile_reward += 1800.0 - 15.0 * min(cur_dist_2d, self.car_cfg.hit_radius_m)
-                car_reward -= 1200.0
+                missile_reward += 6000.0 - 500.0 * cur_dist_2d
+                car_reward -= 2000.0
             else:
-                missile_reward += max(0.0, 1200.0 - 4.0 * cur_dist_2d)
-                car_reward += min(1200.0, 4.0 * cur_dist_2d)
+                missile_reward += max(0.0, 1200.0 - 10.0 * cur_dist_2d)
+                car_reward += min(1500.0, 10.0 * cur_dist_2d)
 
         truncated = bool(self.step_count >= self.max_steps)
 
@@ -578,9 +575,12 @@ class PursuitEvasionAdversarialEnv(gym.Env):
             "car_steer_deg": round(float(np.rad2deg(self.car_steer)), 2),
             "car_visited_cells": int(len(self.visited_cells)),
             "car_spawn_displacement_m": round(float(self.max_spawn_displacement_m), 2),
+            "boundary_radius_m": round(float(self.boundary_radius_m), 1),
+            "boundary_diameter_m": round(float(2.0 * self.boundary_radius_m), 1),
             "target_error_m": round(target_err, 2),
             "min_dist_3d_m": round(float(target_err if alt_m <= 0.1 else self.min_dist_3d), 2),
             "hit": bool(hit_car or (alt_m <= 0.1 and target_err <= self.car_cfg.hit_radius_m)),
+            "total_oscillation_penalty": round(float(self.total_oscillation_penalty), 3),
             "airspeed_ms": round(airspeed, 2),
             "roll_deg": round(float(roll_deg), 2),
             "pitch_deg": round(float(pitch_deg), 2),
