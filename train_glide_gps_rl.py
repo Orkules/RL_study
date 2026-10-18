@@ -7,143 +7,42 @@ from typing import Any, Dict, List
 
 import numpy as np
 import torch
-import torch.nn as nn
 
 from rl.ppo_agent import ActorCritic, PPOConfig, PPOTrainer
 from sim.glide_gps_env import GlideGpsTargetEnv
 
 
-def guidance_teacher_action(obs: np.ndarray, lead_gain: float = 0.65) -> np.ndarray:
-    """360-degree omnidirectional proportional-navigation teacher for 14D GPS coordinate interception."""
-    pitch_n = float(obs[0])
-    sin_roll = float(obs[1])
-    p_norm = float(obs[3])
-    r_norm = float(obs[5])
-    vd_norm = float(obs[7])
-    alt_n = float(obs[8])
-    rel_x = float(obs[9])
-    rel_y = float(obs[10])
-    tv_x = float(obs[11])
-    tv_y = float(obs[12])
-
-    vz_mps = max(12.0, vd_norm * 50.0)
-    t_go = min(22.0, (alt_n * 1000.0) / vz_mps)
-    pred_x = rel_x + (tv_x * 25.0 * lead_gain * t_go) / 1000.0
-    pred_y = rel_y + (tv_y * 25.0 * lead_gain * t_go) / 1000.0
-
-    horiz_dist = float(np.hypot(pred_x, pred_y))
-    bearing = float(np.arctan2(pred_y, pred_x))
-
-    # In the initial vertical dive, spin around the vertical axis to face ANY 360-deg azimuth before pulling out!
-    if pitch_n < -0.82 and abs(bearing) > 0.20:
-        pitch_cmd = 0.02
-        roll_cmd = float(np.clip(0.85 * bearing - 0.25 * p_norm, -0.7, 0.7))
-        return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
-
-    req_glide_ratio = horiz_dist / max(0.04, alt_n)
-    pitch_cmd = float(np.clip(0.03 + 0.42 * (req_glide_ratio - 0.35), 0.02, 0.72))
-    if abs(bearing) > 0.7:
-        pitch_cmd = max(pitch_cmd, 0.48)
-
-    pullout_gate = float(np.clip((pitch_n + 0.85) * 3.5, 0.0, 1.0))
-    desired_roll = float(np.clip(1.65 * bearing, -0.82, 0.82)) * pullout_gate
-    roll_cmd = float(np.clip(1.30 * (desired_roll - sin_roll) - 0.28 * p_norm - 0.12 * r_norm, -1.0, 1.0))
-    return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
-
-
-def pretrain_actor_for_gps_stage(
-    model: ActorCritic,
-    target_mode: str,
-    lead_gain: float,
-    num_episodes: int = 50,
-    epochs: int = 30,
-    seed: int = 42,
-) -> None:
-    """Warm-start the 14D ActorCritic on trajectories in the target environment before PPO fine-tuning."""
-    env = GlideGpsTargetEnv(target_mode=target_mode, release_altitude_m=1000.0, randomize_drop=True)
-    obs_data: List[np.ndarray] = []
-    act_data: List[np.ndarray] = []
-    ret_data: List[float] = []
-
-    for ep in range(num_episodes):
-        obs, _ = env.reset(seed=seed + ep * 13, options={"deterministic": (ep == 0)})
-        ep_obs: List[np.ndarray] = []
-        ep_act: List[np.ndarray] = []
-        ep_rew: List[float] = []
-        while True:
-            act = guidance_teacher_action(obs, lead_gain=lead_gain)
-            # Add slight exploration noise on half the episodes to cover neighbor states
-            if ep % 2 == 1:
-                noisy_act = np.clip(act + np.random.normal(0.0, 0.03, size=2).astype(np.float32), -1.0, 1.0)
-            else:
-                noisy_act = act
-            ep_obs.append(obs)
-            ep_act.append(act)
-            obs, rew, term, trunc, _ = env.step(noisy_act)
-            ep_rew.append(float(rew))
-            if term or trunc:
-                break
-
-        g = 0.0
-        ep_ret = []
-        for r in reversed(ep_rew):
-            g = r + 0.999 * g
-            ep_ret.append(g)
-        ep_ret.reverse()
-
-        obs_data.extend(ep_obs)
-        act_data.extend(ep_act)
-        ret_data.extend(ep_ret)
-
-    obs_t = torch.as_tensor(np.stack(obs_data, axis=0), dtype=torch.float32)
-    act_t = torch.as_tensor(np.stack(act_data, axis=0), dtype=torch.float32)
-    ret_t = torch.as_tensor(np.array(ret_data, dtype=np.float32), dtype=torch.float32)
-
-    opt = torch.optim.Adam(model.parameters(), lr=2e-3)
-    batch_size = 256
-    n = obs_t.shape[0]
-    for _ in range(epochs):
-        perm = torch.randperm(n)
-        for start in range(0, n, batch_size):
-            idx = perm[start : start + batch_size]
-            pred_mean, pred_val = model(obs_t[idx])
-            actor_loss = ((pred_mean - act_t[idx]) ** 2).mean()
-            critic_loss = 0.0001 * ((pred_val - ret_t[idx]) ** 2).mean()
-            loss = actor_loss + critic_loss
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-
-    with torch.no_grad():
-        model.log_std.fill_(-1.6)
-
-
 def evaluate_gps_policy(
     model: ActorCritic,
-    target_mode: str = "static",
+    target_mode: str = "aggressive",
     altitude_m: float = 1000.0,
-    num_episodes: int = 6,
+    num_episodes: int = 5,
     seed: int = 200,
 ) -> Dict[str, Any]:
-    """Evaluate 14D policy on 1,000 m GPS target tracking across deterministic + random test cases."""
+    """Evaluate 14D policy on 1,000 m GPS target distance-decrease across deterministic + random test cases."""
     env_det = GlideGpsTargetEnv(target_mode=target_mode, release_altitude_m=altitude_m, randomize_drop=False)
     obs, info = env_det.reset(seed=seed, options={"deterministic": True, "altitude_m": altitude_m})
     init_dist = info["target_error_m"]
     trajectory: List[Dict[str, Any]] = [info]
     ep_return = 0.0
     max_bank_deg = 0.0
+    inverted_steps = 0
 
     while True:
         act = model.act_deterministic(obs)
         obs, rew, term, trunc, info = env_det.step(act)
         ep_return += rew
         max_bank_deg = max(max_bank_deg, abs(info["roll_deg"]))
+        if abs(info["roll_deg"]) > 120.0:
+            inverted_steps += 1
         trajectory.append(info)
         if term or trunc:
             break
 
+    det_closed = info["total_distance_closed_m"]
     det_final_err = info["target_error_m"]
 
+    closed_list = [det_closed]
     errs = [det_final_err]
     for k in range(1, num_episodes):
         env_r = GlideGpsTargetEnv(target_mode=target_mode, release_altitude_m=altitude_m, randomize_drop=True)
@@ -153,52 +52,47 @@ def evaluate_gps_policy(
             o, _, tm, tr, inf = env_r.step(a)
             if tm or tr:
                 break
+        closed_list.append(float(inf["total_distance_closed_m"]))
         errs.append(float(inf["target_error_m"]))
 
     return {
         "target_mode": target_mode,
         "initial_target_dist_m": round(float(init_dist), 2),
+        "total_distance_closed_m": round(float(det_closed), 2),
+        "mean_random_closed_m": round(float(np.mean(closed_list)), 2),
         "final_target_error_m": round(float(det_final_err), 2),
         "mean_random_error_m": round(float(np.mean(errs)), 2),
         "episode_return": round(float(ep_return), 2),
         "max_bank_deg": round(float(max_bank_deg), 2),
+        "inverted_flight_s": round(float(inverted_steps * env_det.control_dt), 2),
         "flight_time_s": round(float(info["time_s"]), 2),
         "trajectory": trajectory,
     }
 
 
-def run_curriculum_stage(
+def run_pure_ppo_stage(
     model: ActorCritic,
     target_mode: str,
     stage_id: str,
     stage_label: str,
-    lead_gain: float,
-    num_updates: int = 8,
+    num_updates: int = 20,
     num_envs: int = 6,
     rollout_steps: int = 512,
-    lr: float = 1.5e-4,
+    lr: float = 1e-3,
     seed: int = 100,
     ckpt_dir: Path = Path("checkpoints/glide_rl"),
 ) -> Dict[str, Any]:
-    pretrain_actor_for_gps_stage(
-        model=model,
-        target_mode=target_mode,
-        lead_gain=lead_gain,
-        num_episodes=50,
-        epochs=30,
-        seed=seed,
-    )
-
+    """Train 100% pure PPO from scratch — rewarded strictly for decreasing distance to target!"""
     envs = [GlideGpsTargetEnv(target_mode=target_mode, release_altitude_m=1000.0, randomize_drop=True) for _ in range(num_envs)]
     ppo = PPOTrainer(
         model,
         PPOConfig(
             lr=lr,
-            gamma=0.999,
-            gae_lambda=0.98,
-            clip_coef=0.15,
-            ent_coef=0.0005,
-            update_epochs=6,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_coef=0.2,
+            ent_coef=0.003,
+            update_epochs=8,
             minibatch_size=256,
         ),
     )
@@ -209,24 +103,25 @@ def run_curriculum_stage(
         obs_list.append(o)
     obs = np.stack(obs_list, axis=0)
 
-    best_err = 1e9
+    best_score = -1e9
     best_state = None
     best_eval = None
 
     for update in range(num_updates + 1):
         ev = evaluate_gps_policy(model, target_mode=target_mode, altitude_m=1000.0, num_episodes=5, seed=700)
-        score = 0.5 * ev["final_target_error_m"] + 0.5 * ev["mean_random_error_m"]
-        if score < best_err:
-            best_err = score
+        # Maximize total distance decreased toward target across deterministic and random episodes!
+        score = 0.5 * ev["total_distance_closed_m"] + 0.5 * ev["mean_random_closed_m"]
+        if score > best_score:
+            best_score = score
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_eval = ev
 
-        if update % 2 == 0 or update == num_updates:
+        if update % 4 == 0 or update == num_updates:
             print(
                 f"[{stage_label}] update={update:2d}/{num_updates} | "
-                f"Det Miss = {ev['final_target_error_m']:5.1f} m (from {ev['initial_target_dist_m']:.0f} m) | "
-                f"Mean Random Miss = {ev['mean_random_error_m']:5.1f} m | "
-                f"Max Bank = {ev['max_bank_deg']:4.1f}°"
+                f"Dist Decreased = {ev['total_distance_closed_m']:+7.1f} m (Random Avg: {ev['mean_random_closed_m']:+7.1f} m) | "
+                f"Max Roll = {ev['max_bank_deg']:5.1f}° | "
+                f"Inverted Time = {ev['inverted_flight_s']:4.1f}s"
             )
 
         if update == num_updates:
@@ -234,7 +129,7 @@ def run_curriculum_stage(
 
         frac = 1.0 - (update / float(num_updates))
         for pg in ppo.optimizer.param_groups:
-            pg["lr"] = max(3e-5, lr * frac)
+            pg["lr"] = max(1e-4, lr * frac)
 
         obs_buf = np.zeros((rollout_steps, num_envs, 14), dtype=np.float32)
         act_buf = np.zeros((rollout_steps, num_envs, 2), dtype=np.float32)
@@ -298,19 +193,23 @@ def run_curriculum_stage(
             "target_mode": target_mode,
             "obs_dim": 14,
             "model_state_dict": model.state_dict(),
+            "total_distance_closed_m": best_eval["total_distance_closed_m"],
+            "mean_random_closed_m": best_eval["mean_random_closed_m"],
             "final_target_error_m": best_eval["final_target_error_m"],
             "mean_random_error_m": best_eval["mean_random_error_m"],
             "initial_target_dist_m": best_eval["initial_target_dist_m"],
             "max_bank_deg": best_eval["max_bank_deg"],
+            "inverted_flight_s": best_eval["inverted_flight_s"],
             "episode_return": best_eval["episode_return"],
         },
         ckpt_file,
     )
     print(
         f"==> Completed [{stage_label}] | Saved {ckpt_file} | "
-        f"Best Det Miss = {best_eval['final_target_error_m']:.1f} m | "
-        f"Mean Random Miss = {best_eval['mean_random_error_m']:.1f} m | "
-        f"Max Bank = {best_eval['max_bank_deg']:.1f}°\n"
+        f"Best Dist Decreased = {best_eval['total_distance_closed_m']:+.1f} m | "
+        f"Random Avg Decreased = {best_eval['mean_random_closed_m']:+.1f} m | "
+        f"Max Roll = {best_eval['max_bank_deg']:.1f}° | "
+        f"Inverted Flight = {best_eval['inverted_flight_s']:.1f}s\n"
     )
     return best_eval
 
@@ -328,41 +227,38 @@ def train_all_gps_stages() -> Dict[str, Any]:
 
     t0 = time.time()
 
-    # Stage A: Static Desired GPS Coordinate
-    res_static = run_curriculum_stage(
+    # Stage 1: Static Desired GPS Coordinate (Pure PPO from scratch on distance-decrease)
+    res_static = run_pure_ppo_stage(
         model=model,
         target_mode="static",
         stage_id="gps_1_static",
         stage_label="GPS Stage 1: Static Desired Coordinate",
-        lead_gain=0.0,
-        num_updates=6,
-        lr=1.5e-4,
+        num_updates=16,
+        lr=1.2e-3,
         seed=101,
         ckpt_dir=ckpt_dir,
     )
 
-    # Automatically advance to Stage B: Linear Straight-Line Moving GPS Coordinate
-    res_linear = run_curriculum_stage(
+    # Stage 2: Linear Straight-Line Moving Coordinate (Pure PPO on distance-decrease)
+    res_linear = run_pure_ppo_stage(
         model=model,
         target_mode="linear",
         stage_id="gps_2_linear",
         stage_label="GPS Stage 2: Linear Straight-Line Moving Coordinate",
-        lead_gain=0.65,
-        num_updates=6,
-        lr=1.5e-4,
+        num_updates=16,
+        lr=8e-4,
         seed=202,
         ckpt_dir=ckpt_dir,
     )
 
-    # Automatically advance to Stage C: Aggressive Maneuvering GPS Coordinate
-    res_aggr = run_curriculum_stage(
+    # Stage 3: Mirror-Point Flip Across Axis (Pure PPO on distance-decrease — learns to flip/roll 180° & fly inverted!)
+    res_aggr = run_pure_ppo_stage(
         model=model,
         target_mode="aggressive",
         stage_id="gps_3_aggressive",
-        stage_label="GPS Stage 3: Aggressive Maneuvering Coordinate",
-        lead_gain=0.35,
-        num_updates=6,
-        lr=1.5e-4,
+        stage_label="GPS Stage 3: Mirror-Point Flip & Inverted Flight",
+        num_updates=20,
+        lr=8e-4,
         seed=303,
         ckpt_dir=ckpt_dir,
     )
@@ -377,7 +273,7 @@ def train_all_gps_stages() -> Dict[str, Any]:
     with open(out_dir / "glide_gps_training_progress.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
-    print(f"All 3 GPS curriculum stages completed automatically in {elapsed:.1f}s!")
+    print(f"All 3 Pure-PPO GPS stages completed in {elapsed:.1f}s!")
     return summary
 
 

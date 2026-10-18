@@ -46,13 +46,13 @@ def test_trained_glide_rl_policy_reaches_over_1300m_unshaped():
     assert pitch_4 > -25.0
 
 
-def test_gps_target_curriculum_stages_static_linear_aggressive():
+def test_gps_target_curriculum_pure_ppo_distance_decrease_and_mirror_flip():
     stages = [
-        ("gps_1_static", "static", 45.0),
-        ("gps_2_linear", "linear", 45.0),
-        ("gps_3_aggressive", "aggressive", 210.0),
+        ("gps_1_static", "static", 400.0),
+        ("gps_2_linear", "linear", 400.0),
+        ("gps_3_aggressive", "aggressive", 250.0),
     ]
-    for stage_id, mode, max_allowed_err in stages:
+    for stage_id, mode, min_closed_m in stages:
         ckpt_path = Path(f"checkpoints/glide_rl/{stage_id}.pt")
         assert ckpt_path.exists()
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -62,13 +62,12 @@ def test_gps_target_curriculum_stages_static_linear_aggressive():
 
         env = GlideGpsTargetEnv(target_mode=mode, release_altitude_m=1000.0, randomize_drop=False)
         obs, info = env.reset(seed=200, options={"deterministic": True})
-        max_bank = 0.0
+        max_roll = 0.0
         while True:
             act = model.act_deterministic(obs)
             obs, _, term, trunc, info = env.step(act)
-            max_bank = max(max_bank, abs(info["roll_deg"]))
+            max_roll = max(max_roll, abs(info["roll_deg"]))
             if term or trunc:
                 break
-        assert info["target_error_m"] < max_allowed_err
-        if mode == "aggressive":
-            assert max_bank > 45.0
+        assert info["total_distance_closed_m"] > min_closed_m
+        assert max_roll > 140.0  # Confirms the policy rolls over / flies inverted!

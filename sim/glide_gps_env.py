@@ -24,21 +24,41 @@ class GlideGpsTargetEnv(gym.Env):
     Gymnasium RL Environment for the 300 g Delta-Wing Airframe Guided to a Desired GPS Coordinate:
       - Stage 1 ("static"): Static GPS coordinate (N_target, E_target) on the ground.
       - Stage 2 ("linear"): GPS coordinate moving in a straight line at constant linear speed while the glider flies.
-      - Stage 3 ("aggressive"): Rapid multi-switch slalom / zig-zag GPS coordinate that jumps and reverses side-to-side
-        every ~85 steps (4.25 s) across 8 times during a single 1,000 m drop, forcing the glider to bank hard (+/- 55 to 68 deg)
-        from one side to the other repeatedly in mid-air!
+      - Stage 3 ("aggressive"): Mirror-Point Flip Across the Axis — starts at point (X_0, Y_0) and repeatedly flips
+        to the exact mirror point (-X_0, -Y_0) across the origin/axis while the glider is in the air!
 
-    Strict Unbiased Reward Rule:
-      - ZERO attitude, pitch, roll, rate, or slew penalties.
-      - ZERO mid-air termination.
-      - The network receives ONLY distance-to-target reduction reward (and landing proximity bonus at ground impact).
+    Pure Distance-Decreasing Reward Rule (User Specification):
+      - The algorithm is rewarded ONLY when the horizontal distance to the current target is decreasing:
+          reward = 5.0 * (prev_dist_to_target - cur_dist_to_target)
+      - Whenever the target moves or flips to its mirror point across the axis, prev_dist_to_target is reset to the
+        new target position, and the network immediately earns positive reward again for decreasing the distance
+        toward the new target!
+      - It does NOT need to touch the target on the ground (zero terminal landing bonus, zero attitude/roll penalties).
+      - The network discovers on its own how to pull a half-loop / roll over to 180 deg and fly upside-down (inverted)
+        whenever the target flips across the axis!
+
+    Observation Space (14D Singularity-Free Body-Frame IMU + GPS Target Vector):
+      0: pitch_norm     - Pitch angle theta / (pi / 2)
+      1: sin_roll       - sin(roll)
+      2: cos_roll       - cos(roll) (+1 = upright, -1 = upside-down inverted flight!)
+      3: gyro_p         - Roll rate p / 10.0 (rad/s)
+      4: gyro_q         - Pitch rate q / 10.0 (rad/s)
+      5: gyro_r         - Yaw rate r / 10.0 (rad/s)
+      6: airspeed_n     - Airspeed V / 50.0 (m/s)
+      7: vz_norm        - Vertical descent rate vd / 50.0 (m/s)
+      8: alt_norm       - Current altitude / 1000.0
+      9: err_bx         - 3D Target unit vector along Body Nose Axis (+x_b) in [-1, +1]
+     10: err_by         - 3D Target unit vector along Body Right Wing Axis (+y_b) in [-1, +1]
+     11: err_bz         - 3D Target unit vector along Body Belly Axis (+z_b) in [-1, +1]
+     12: rel_x_horiz    - Horizontal target vector in heading frame (cos(yaw)*dN + sin(yaw)*dE) / 1000.0
+     13: rel_y_horiz    - Horizontal target vector in heading frame (-sin(yaw)*dN + cos(yaw)*dE) / 1000.0
     """
 
     metadata = {"render_modes": ["dict"], "render_fps": 20}
 
     def __init__(
         self,
-        target_mode: str = "static",  # "static", "linear", or "aggressive"
+        target_mode: str = "static",  # "static", "linear", or "aggressive" (mirror-point flips)
         release_altitude_m: float = 1000.0,
         control_dt: float = 0.05,
         max_wing_flap_deg: float = MAX_WING_FLAP_DEG,
@@ -65,23 +85,20 @@ class GlideGpsTargetEnv(gym.Env):
         self.R_wb = np.eye(3, dtype=np.float64)
         self.angles = np.zeros(3, dtype=np.float64)
         self.omega = np.zeros(3, dtype=np.float64)
-        self.pos_ned = np.zeros(3, dtype=np.float64)
+        self.pos_ned = np.array([0.0, 0.0, -1000.0], dtype=np.float64)
         self.vel_ned = np.zeros(3, dtype=np.float64)
         self.delta_r_deg = 0.0
         self.delta_l_deg = 0.0
         self.last_action = np.zeros(2, dtype=np.float32)
 
-        # Desired GPS Target State (North, East) in meters and velocity (vN, vE) in m/s
-        self.target_ne = np.array([980.0, 280.0], dtype=np.float64)
+        self.target_ne = np.array([800.0, 0.0], dtype=np.float64)
         self.target_vel_ne = np.zeros(2, dtype=np.float64)
-
-        # Schedule of multiple mid-flight target relocations / velocity switches for "aggressive" mode
-        # Each entry: (trigger_step, new_target_N, new_target_E, new_vel_N, new_vel_E)
         self.aggressive_schedule: List[Tuple[int, float, float, float, float]] = []
 
         self.step_count = 0
         self.max_steps = 1600
         self.prev_dist_to_target = 0.0
+        self.total_distance_closed_m = 0.0
 
     def _get_obs(self) -> np.ndarray:
         roll, pitch, yaw = self.angles
@@ -90,18 +107,23 @@ class GlideGpsTargetEnv(gym.Env):
         vd = float(self.vel_ned[2])
         alt_m = max(0.0, float(-self.pos_ned[2]))
 
-        # Relative GPS target vector in NED horizontal frame
-        d_n = float(self.target_ne[0] - self.pos_ned[0])
-        d_e = float(self.target_ne[1] - self.pos_ned[1])
+        # Horizontal vector from airframe to target (dN, dE, 0) projected into 3D Body Frame!
+        # Using horizontal d_ned = [dN, dE, 0] ensures err_b points strictly toward the horizontal target direction
+        # in the body frame: if err_b[2] > 0, target is on the belly side (+z_b); if err_b[2] < 0, target is on the dorsal/top side (-z_b)!
+        d_horiz_ned = np.array(
+            [
+                float(self.target_ne[0] - self.pos_ned[0]),
+                float(self.target_ne[1] - self.pos_ned[1]),
+                0.0,
+            ],
+            dtype=np.float64,
+        )
+        dist_h = max(1.0, float(np.linalg.norm(d_horiz_ned)))
+        unit_b = (self.R_wb.T @ d_horiz_ned) / dist_h
 
-        # Project relative GPS offset into airframe's horizontal heading frame (cos(yaw), sin(yaw))
         cy, sy = float(np.cos(yaw)), float(np.sin(yaw))
-        rel_x_body = cy * d_n + sy * d_e
-        rel_y_body = -sy * d_n + cy * d_e
-
-        # Project target horizontal velocity (vN, vE) into airframe's horizontal heading frame
-        tv_x_body = cy * float(self.target_vel_ne[0]) + sy * float(self.target_vel_ne[1])
-        tv_y_body = -sy * float(self.target_vel_ne[0]) + cy * float(self.target_vel_ne[1])
+        rel_x_horiz = cy * d_horiz_ned[0] + sy * d_horiz_ned[1]
+        rel_y_horiz = -sy * d_horiz_ned[0] + cy * d_horiz_ned[1]
 
         return np.array(
             [
@@ -114,11 +136,11 @@ class GlideGpsTargetEnv(gym.Env):
                 airspeed / 50.0,
                 vd / 50.0,
                 alt_m / 1000.0,
-                np.clip(rel_x_body / 1000.0, -3.0, 3.0),
-                np.clip(rel_y_body / 1000.0, -3.0, 3.0),
-                np.clip(tv_x_body / 25.0, -3.0, 3.0),
-                np.clip(tv_y_body / 25.0, -3.0, 3.0),
-                float(self.last_action[0]),
+                float(unit_b[0]),
+                float(unit_b[1]),
+                float(unit_b[2]),
+                np.clip(rel_x_horiz / 1000.0, -3.0, 3.0),
+                np.clip(rel_y_horiz / 1000.0, -3.0, 3.0),
             ],
             dtype=np.float32,
         )
@@ -136,10 +158,10 @@ class GlideGpsTargetEnv(gym.Env):
         deterministic = bool(options.get("deterministic", False))
 
         if self.randomize_drop and not deterministic:
-            roll0 = float(self.np_random.uniform(-5.0, 5.0))
-            pitch0 = float(self.np_random.uniform(-89.5, -85.0))
+            roll0 = float(self.np_random.uniform(-4.0, 4.0))
+            pitch0 = float(self.np_random.uniform(-89.5, -86.0))
             yaw0 = float(self.np_random.uniform(-15.0, 15.0))
-            self.omega = self.np_random.uniform(-0.2, 0.2, size=3).astype(np.float64)
+            self.omega = self.np_random.uniform(-0.15, 0.15, size=3).astype(np.float64)
         else:
             roll0, pitch0, yaw0 = 0.0, -89.5, 0.0
             self.omega = np.zeros(3, dtype=np.float64)
@@ -153,66 +175,61 @@ class GlideGpsTargetEnv(gym.Env):
         self.delta_l_deg = 0.0
         self.last_action = np.zeros(2, dtype=np.float32)
         self.step_count = 0
+        self.total_distance_closed_m = 0.0
         self.aggressive_schedule = []
 
-        # Initialize Desired GPS Coordinate (N, E) and velocity
         if "target_ne" in options:
             self.target_ne = np.array(options["target_ne"], dtype=np.float64)
             self.target_vel_ne = np.array(options.get("target_vel_ne", [0.0, 0.0]), dtype=np.float64)
         elif deterministic:
             if self.target_mode == "static":
-                self.target_ne = np.array([980.0, 280.0], dtype=np.float64)
+                self.target_ne = np.array([850.0, 260.0], dtype=np.float64)
                 self.target_vel_ne = np.array([0.0, 0.0], dtype=np.float64)
             elif self.target_mode == "linear":
-                self.target_ne = np.array([720.0, -180.0], dtype=np.float64)
+                self.target_ne = np.array([650.0, -200.0], dtype=np.float64)
                 self.target_vel_ne = np.array([4.5, 9.0], dtype=np.float64)
-            else:  # "aggressive" — 7 violent side-to-side target jumps + high-speed motion!
-                self.target_ne = np.array([280.0, +220.0], dtype=np.float64)
-                self.target_vel_ne = np.array([4.0, +14.0], dtype=np.float64)
+            else:
+                # "aggressive": Starts at (+800, +220), then flips across the axis to its exact mirror point
+                # (-800, -220), then flips back to (+800, -220), then (-800, +220)!
+                self.target_ne = np.array([+800.0, +220.0], dtype=np.float64)
+                self.target_vel_ne = np.array([0.0, 0.0], dtype=np.float64)
                 self.aggressive_schedule = [
-                    (85,  350.0, -240.0, 4.0, -15.0),
-                    (175, 430.0, +250.0, 4.0, +15.0),
-                    (265, 510.0, -250.0, 4.0, -15.0),
-                    (355, 590.0, +220.0, 4.0, +12.0),
-                    (445, 660.0, -180.0, 3.0, -10.0),
-                    (535, 720.0, +120.0, 2.0,  +6.0),
-                    (615, 760.0,  -40.0, 0.0,   0.0),
+                    (160, -800.0, -220.0, 0.0, 0.0),
+                    (360, +800.0, -220.0, 0.0, 0.0),
+                    (560, -800.0, +220.0, 0.0, 0.0),
                 ]
         else:
-            # Full 360-degree omnidirectional GPS target around the center (0, 0)!
-            r_init = float(self.np_random.uniform(120.0, 1150.0))
-            az_init = float(self.np_random.uniform(-np.pi, np.pi))
-            self.target_ne = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init)], dtype=np.float64)
-
             if self.target_mode == "static":
+                r_init = float(self.np_random.uniform(500.0, 1000.0))
+                az_init = float(self.np_random.uniform(-np.pi, np.pi))
+                self.target_ne = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init)], dtype=np.float64)
                 self.target_vel_ne = np.zeros(2, dtype=np.float64)
             elif self.target_mode == "linear":
+                r_init = float(self.np_random.uniform(550.0, 900.0))
+                az_init = float(self.np_random.uniform(-np.pi, np.pi))
+                self.target_ne = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init)], dtype=np.float64)
                 spd = float(self.np_random.uniform(5.0, 12.0))
                 hdg = float(self.np_random.uniform(-np.pi, np.pi))
                 self.target_vel_ne = np.array([spd * np.cos(hdg), spd * np.sin(hdg)], dtype=np.float64)
-            else:  # "aggressive" — Random 7 side-to-side jumps throughout the flight across 360 deg!
-                base_az = float(self.np_random.uniform(-np.pi, np.pi))
-                fwd_vec = np.array([np.cos(base_az), np.sin(base_az)], dtype=np.float64)
-                lat_vec = np.array([-np.sin(base_az), np.cos(base_az)], dtype=np.float64)
-                side = float(self.np_random.choice([-1.0, 1.0]))
-                cur_fwd = float(self.np_random.uniform(220.0, 320.0))
-                init_lat = side * float(self.np_random.uniform(180.0, 260.0))
-                self.target_ne = cur_fwd * fwd_vec + init_lat * lat_vec
-                self.target_vel_ne = 4.0 * fwd_vec + (side * float(self.np_random.uniform(12.0, 18.0))) * lat_vec
-                cur_step = int(self.np_random.integers(75, 95))
-                for k in range(7):
-                    side *= -1.0
-                    cur_fwd += float(self.np_random.uniform(65.0, 85.0))
-                    lat_amp = float(self.np_random.uniform(180.0, 280.0)) * max(0.20, 1.0 - 0.12 * k)
-                    pt_ne = cur_fwd * fwd_vec + (side * lat_amp) * lat_vec
-                    v_lat = side * float(self.np_random.uniform(8.0, 16.0)) * max(0.0, 1.0 - 0.16 * k)
-                    v_fwd = float(self.np_random.uniform(1.0, 4.0)) * max(0.0, 1.0 - 0.15 * k)
-                    v_ne = v_fwd * fwd_vec + v_lat * lat_vec
-                    self.aggressive_schedule.append((cur_step, float(pt_ne[0]), float(pt_ne[1]), float(v_ne[0]), float(v_ne[1])))
-                    cur_step += int(self.np_random.integers(80, 95))
+            else:
+                # "aggressive": Start at random (X_0, Y_0) and flip to exact mirror point (-X_0, -Y_0) across the axis multiple times!
+                r_init = float(self.np_random.uniform(650.0, 950.0))
+                az_init = float(self.np_random.uniform(-np.pi, np.pi))
+                x0 = r_init * np.cos(az_init)
+                y0 = r_init * np.sin(az_init)
+                self.target_ne = np.array([x0, y0], dtype=np.float64)
+                self.target_vel_ne = np.zeros(2, dtype=np.float64)
+                s1 = int(self.np_random.integers(140, 185))
+                s2 = s1 + int(self.np_random.integers(170, 220))
+                s3 = s2 + int(self.np_random.integers(170, 220))
+                self.aggressive_schedule = [
+                    (s1, -x0, -y0, 0.0, 0.0),
+                    (s2, +x0, -y0, 0.0, 0.0),
+                    (s3, -x0, +y0, 0.0, 0.0),
+                ]
 
         self.prev_dist_to_target = float(
-            np.sqrt((self.target_ne[0] - self.pos_ned[0]) ** 2 + (self.target_ne[1] - self.pos_ned[1]) ** 2 + self.pos_ned[2] ** 2)
+            np.hypot(self.target_ne[0] - self.pos_ned[0], self.target_ne[1] - self.pos_ned[1])
         )
 
         return self._get_obs(), self.get_info()
@@ -320,7 +337,7 @@ class GlideGpsTargetEnv(gym.Env):
         act = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
         self.step_count += 1
 
-        # Trigger multi-switch slalom target relocations in "aggressive" mode
+        # Trigger mirror-point flips across the axis in "aggressive" mode
         if self.target_mode == "aggressive":
             for trig_step, tn, te, vn, ve in self.aggressive_schedule:
                 if self.step_count == trig_step:
@@ -328,9 +345,9 @@ class GlideGpsTargetEnv(gym.Env):
                     self.target_ne[1] = te
                     self.target_vel_ne[0] = vn
                     self.target_vel_ne[1] = ve
-                    # Reset prev_dist_to_target after teleport so reward measures progress toward the new waypoint
+                    # Reset prev_dist_to_target to the new mirror target so decreasing distance to the new target rewards again!
                     self.prev_dist_to_target = float(
-                        np.sqrt((self.target_ne[0] - self.pos_ned[0]) ** 2 + (self.target_ne[1] - self.pos_ned[1]) ** 2 + self.pos_ned[2] ** 2)
+                        np.hypot(self.target_ne[0] - self.pos_ned[0], self.target_ne[1] - self.pos_ned[1])
                     )
                     break
 
@@ -342,6 +359,10 @@ class GlideGpsTargetEnv(gym.Env):
             if self.target_ne[1] < -1250.0 or self.target_ne[1] > 1250.0:
                 self.target_vel_ne[1] *= -1.0
                 self.target_ne[1] = np.clip(self.target_ne[1], -1250.0, 1250.0)
+            # Update prev_dist_to_target for target motion so reward measures the glider's own closing motion
+            self.prev_dist_to_target = float(
+                np.hypot(self.target_ne[0] - self.pos_ned[0], self.target_ne[1] - self.pos_ned[1])
+            )
 
         pitch_flap_deg = float(act[0]) * self.max_wing_flap_deg
         roll_flap_deg = float(act[1]) * 20.0
@@ -359,21 +380,17 @@ class GlideGpsTargetEnv(gym.Env):
         cur_dist_2d = float(
             np.hypot(self.target_ne[0] - self.pos_ned[0], self.target_ne[1] - self.pos_ned[1])
         )
-        cur_dist_3d = float(
-            np.sqrt((self.target_ne[0] - self.pos_ned[0]) ** 2 + (self.target_ne[1] - self.pos_ned[1]) ** 2 + self.pos_ned[2] ** 2)
-        )
-        progress_to_target = self.prev_dist_to_target - cur_dist_3d
-        self.prev_dist_to_target = cur_dist_3d
+        distance_decrease = self.prev_dist_to_target - cur_dist_2d
+        self.prev_dist_to_target = cur_dist_2d
+        self.total_distance_closed_m += distance_decrease
 
-        # --- 100% Unshaped 3D GPS Target Distance Reward ---
-        # Zero attitude, pitch, roll, or rate penalties. Only reward closing 3D distance to the GPS coordinate!
-        reward = 4.0 * progress_to_target
+        # --- 100% Pure Distance-Decrease Reward (User Specification) ---
+        # Positive when distance to target is decreasing; negative when increasing.
+        # Does NOT need to touch the target on the ground — zero terminal bonus, zero attitude penalties!
+        reward = 5.0 * distance_decrease
 
         hit_ground = bool(-self.pos_ned[2] <= 0.0)
         terminated = hit_ground
-        if hit_ground:
-            reward += max(0.0, 2000.0 - 4.0 * cur_dist_2d)
-
         truncated = bool(self.step_count >= self.max_steps)
         self.last_action = act.copy()
 
@@ -399,6 +416,7 @@ class GlideGpsTargetEnv(gym.Env):
             "target_vx_ms": round(float(self.target_vel_ne[0]), 2),
             "target_vy_ms": round(float(self.target_vel_ne[1]), 2),
             "target_error_m": round(target_err, 2),
+            "total_distance_closed_m": round(float(self.total_distance_closed_m), 2),
             "airspeed_ms": round(airspeed, 2),
             "roll_deg": round(float(roll_deg), 2),
             "pitch_deg": round(float(pitch_deg), 2),
