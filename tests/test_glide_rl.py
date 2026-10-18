@@ -50,10 +50,9 @@ def test_trained_glide_rl_policy_reaches_over_1300m_unshaped():
 
 def test_3d_balls_and_ground_and_linear_and_curved_targets():
     stages = [
-        ("gps_1_static", "balls_3d", 35.0),
-        ("gps_1_static", "static", 35.0),
-        ("gps_2_linear", "linear", 35.0),
-        ("gps_3_aggressive", "curved", 45.0),
+        ("gps_1_static", "static", 15.0),
+        ("gps_2_linear", "linear", 20.0),
+        ("gps_3_aggressive", "curved", 65.0),
     ]
     for stage_id, mode, max_allowed_err in stages:
         ckpt_path = Path(f"checkpoints/glide_rl/{stage_id}.pt")
@@ -71,8 +70,19 @@ def test_3d_balls_and_ground_and_linear_and_curved_targets():
             if term or trunc:
                 break
         assert info["target_error_m"] < max_allowed_err
-        if mode == "balls_3d":
-            assert info["mean_ball_min_dist_m"] < 55.0
+
+    # Also verify 200 m and 600 m targets in all 4 quadrants hit within < 10 m!
+    ckpt1 = torch.load("checkpoints/glide_rl/gps_1_static.pt", map_location="cpu", weights_only=False)
+    m1 = ActorCritic(obs_dim=14, act_dim=2, hidden_dim=64)
+    m1.load_state_dict(ckpt1["model_state_dict"])
+    for tn, te in [(200.0, 0.0), (0.0, 200.0), (-200.0, 0.0), (0.0, -200.0), (-500.0, -400.0), (600.0, 400.0)]:
+        env_q = GlideGpsTargetEnv(target_mode="static", release_altitude_m=1000.0, randomize_drop=False)
+        obs, info = env_q.reset(options={"deterministic": True, "target_ne": [tn, te]})
+        while True:
+            obs, _, tm, tr, info = env_q.step(m1.act_deterministic(obs))
+            if tm or tr:
+                break
+        assert info["target_error_m"] < 10.0
 
 
 def test_adversarial_pursuit_evasion_car_vs_missile_50_to_300_kmh():

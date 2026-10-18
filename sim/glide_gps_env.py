@@ -230,31 +230,32 @@ class GlideGpsTargetEnv(gym.Env):
             self.balls_ned = self.target_ned.reshape(1, 3).copy()
             self.ball_min_dists = np.array([self._compute_dist_3d()], dtype=np.float64)
         elif self.target_mode == "balls_3d":
-            # Spawn 5 balls in 3D space + 1 final ball on the ground, placed in alternating / non-collinear 3D directions
-            alt_levels = [820.0, 640.0, 460.0, 280.0, 0.0]
+            # Spawn 4 air balls in ALL 4 QUADRANTS (+N/+E, -N/+E, -N/-E, +N/-E) + 1 final ground ball!
+            alt_levels = [760.0, 560.0, 360.0, 180.0, 0.0]
             balls = []
             if deterministic:
                 offsets = [
-                    (85.0,  +75.0),
-                    (200.0, -85.0),
-                    (330.0, +95.0),
-                    (470.0, -80.0),
-                    (620.0,   0.0),
+                    (+130.0, +130.0),  # Quadrant I (+N, +E)
+                    (-140.0, +160.0),  # Quadrant II (-N, +E)
+                    (-220.0, -180.0),  # Quadrant III (-N, -E)
+                    (+260.0, -220.0),  # Quadrant IV (+N, -E)
+                    (+460.0, +160.0),  # Final Ground Ball
                 ]
                 for (bn, be), ba in zip(offsets, alt_levels):
                     balls.append([bn, be, -ba])
             else:
-                base_az = float(self.np_random.uniform(-np.pi, np.pi))
-                fwd = np.array([np.cos(base_az), np.sin(base_az)], dtype=np.float64)
-                lat = np.array([-np.sin(base_az), np.cos(base_az)], dtype=np.float64)
-                cur_f = 0.0
-                side = float(self.np_random.choice([-1.0, 1.0]))
-                for ba in alt_levels:
-                    cur_f += float(self.np_random.uniform(95.0, 135.0))
-                    side *= -1.0
-                    lat_shift = side * float(self.np_random.uniform(55.0, 105.0))
-                    pt = cur_f * fwd + lat_shift * lat
-                    balls.append([float(pt[0]), float(pt[1]), -ba])
+                # Place each ball in a different quadrant around the origin (0, 0) so all 4 quadrants are covered!
+                quad_signs = [(+1.0, +1.0), (-1.0, +1.0), (-1.0, -1.0), (+1.0, -1.0)]
+                perm_q = self.np_random.permutation(4)
+                for q_i in range(4):
+                    sn, se = quad_signs[int(perm_q[q_i])]
+                    r_b = float(self.np_random.uniform(110.0 + 45.0 * q_i, 190.0 + 65.0 * q_i))
+                    ang_b = float(self.np_random.uniform(0.25, 1.32))
+                    balls.append([sn * r_b * np.cos(ang_b), se * r_b * np.sin(ang_b), -alt_levels[q_i]])
+                # Final ground ball anywhere 360 deg at radius 220..650 m
+                r_g = float(self.np_random.uniform(220.0, 650.0))
+                az_g = float(self.np_random.uniform(-np.pi, np.pi))
+                balls.append([r_g * np.cos(az_g), r_g * np.sin(az_g), 0.0])
             self.balls_ned = np.array(balls, dtype=np.float64)
             self.active_ball_idx = 0
             self.target_ned = self.balls_ned[0].copy()
@@ -290,13 +291,13 @@ class GlideGpsTargetEnv(gym.Env):
             self.ball_min_dists = np.array([self._compute_dist_3d()], dtype=np.float64)
         else:
             if self.target_mode == "static":
-                r_init = float(self.np_random.uniform(200.0, 880.0))
+                r_init = float(self.np_random.uniform(60.0, 920.0))
                 az_init = float(self.np_random.uniform(-np.pi, np.pi))
                 self.target_ned = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init), 0.0], dtype=np.float64)
                 self.target_vel_ne = np.zeros(2, dtype=np.float64)
             elif self.target_mode == "linear":
-                # Linear moving target at different speeds (4 m/s to 20 m/s)!
-                r_init = float(self.np_random.uniform(320.0, 620.0))
+                # Linear moving target at different speeds (4 m/s to 20 m/s) across all 4 quadrants!
+                r_init = float(self.np_random.uniform(140.0, 680.0))
                 az_init = float(self.np_random.uniform(-np.pi, np.pi))
                 self.target_ned = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init), 0.0], dtype=np.float64)
                 self.target_speed_ms = float(self.np_random.uniform(4.0, 20.0))
@@ -306,8 +307,8 @@ class GlideGpsTargetEnv(gym.Env):
                     [self.target_speed_ms * np.cos(self.target_hdg_rad), self.target_speed_ms * np.sin(self.target_hdg_rad)],
                     dtype=np.float64,
                 )
-            else:  # "curved" or "aggressive" — Curved Moving Target at different speeds & turn rates!
-                r_init = float(self.np_random.uniform(320.0, 600.0))
+            else:  # "curved" or "aggressive" — Curved Moving Target across all 4 quadrants!
+                r_init = float(self.np_random.uniform(140.0, 650.0))
                 az_init = float(self.np_random.uniform(-np.pi, np.pi))
                 self.target_ned = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init), 0.0], dtype=np.float64)
                 self.target_speed_ms = float(self.np_random.uniform(8.0, 20.0))

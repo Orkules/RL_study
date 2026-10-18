@@ -99,7 +99,8 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.delta_l_deg = 0.0
 
         # Car State on Ground (North_m, East_m, heading_yaw_rad, speed_ms, steer_rad, vel_N, vel_E)
-        self.car_pos_ne = np.array([450.0, 0.0], dtype=np.float64)
+        self.car_pos_ne = np.array([280.0, -180.0], dtype=np.float64)
+        self.car_spawn_center = self.car_pos_ne.copy()
         self.car_yaw = 0.0
         self.car_speed = 0.0
         self.car_steer = 0.0
@@ -244,21 +245,22 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.delta_r_deg = 0.0
         self.delta_l_deg = 0.0
 
-        # Initialize Car position & velocity within reachable ground arena
+        # Initialize Car position & velocity across all 4 quadrants at realistic ground distances (150 m to 550 m)!
         if "car_pos_ne" in options:
             self.car_pos_ne = np.array(options["car_pos_ne"], dtype=np.float64)
             self.car_yaw = float(options.get("car_yaw", 0.0))
             self.car_speed = float(options.get("car_speed", 0.5 * self.car_max_speed_ms))
         elif deterministic:
-            self.car_pos_ne = np.array([42.0, -18.0], dtype=np.float64)
+            self.car_pos_ne = np.array([280.0, -180.0], dtype=np.float64)
             self.car_yaw = 1.25
             self.car_speed = 0.65 * self.car_max_speed_ms
         else:
-            r_init = float(self.np_random.uniform(20.0, 58.0))
+            r_init = float(self.np_random.uniform(140.0, 520.0))
             az_init = float(self.np_random.uniform(-np.pi, np.pi))
             self.car_pos_ne = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init)], dtype=np.float64)
             self.car_yaw = float(self.np_random.uniform(-np.pi, np.pi))
             self.car_speed = float(self.np_random.uniform(0.3, 0.85)) * self.car_max_speed_ms
+        self.car_spawn_center = self.car_pos_ne.copy()
 
         self.car_steer = 0.0
         self.car_vel_ne = np.array(
@@ -310,12 +312,13 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.car_vel_ne[1] = self.car_speed * np.sin(self.car_yaw)
         self.car_pos_ne += self.car_vel_ne * sub_dt
 
-        # Keep car inside the reachable ground arena (radius <= 52 m) with smooth inward reflection
-        r_car = float(np.hypot(self.car_pos_ne[0], self.car_pos_ne[1]))
-        if r_car > 52.0:
-            scale = 52.0 / r_car
-            self.car_pos_ne *= scale
-            inward_yaw = float(np.arctan2(-self.car_pos_ne[1], -self.car_pos_ne[0]))
+        # Keep car inside its local 42 m RC driving zone around car_spawn_center (which can be anywhere 140-520 m from origin!)
+        rel_c = self.car_pos_ne - self.car_spawn_center
+        r_car = float(np.hypot(rel_c[0], rel_c[1]))
+        if r_car > 42.0:
+            rel_c *= 42.0 / r_car
+            self.car_pos_ne = self.car_spawn_center + rel_c
+            inward_yaw = float(np.arctan2(-rel_c[1], -rel_c[0]))
             self.car_yaw = inward_yaw + float(np.clip(self.car_steer, -0.45, 0.45))
             self.car_vel_ne[0] = self.car_speed * np.cos(self.car_yaw)
             self.car_vel_ne[1] = self.car_speed * np.sin(self.car_yaw)

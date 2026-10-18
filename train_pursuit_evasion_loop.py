@@ -14,67 +14,21 @@ from rl.ppo_agent import ActorCritic, PPOConfig, PPOTrainer
 from sim.pursuit_evasion_env import PursuitEvasionAdversarialEnv
 
 
+from train_glide_gps_rl import omni_3d_guidance
+
+
 SPEED_TIERS_KMH = [50.0, 80.0, 110.0, 140.0, 175.0, 210.0, 250.0, 300.0]
 
 
 def high_speed_dive_pursuit(obs: np.ndarray) -> np.ndarray:
     """
-    100% Orientation-Free 3D Velocity-Vector Dive Pursuit against Evasive Ground Vehicles (50 to 300 km/h):
-      - Uses ZERO Euler angles (only 3D body-frame vectors dir_b, grav_b, u, w, p, q, r, and car velocity tv_bx, tv_by).
-      - Aligns whichever wing plane (dorsal -z_b or ventral +z_b) is closer to the target, so it flies equally well
-        upright or upside-down!
+    Universal 360-Degree All-Range (50 m to 1,000 m) + Terminal 3D Dive Car Hunter:
+      - Glides out to any distance (140 m to 950 m) in all 4 quadrants, then dives straight into the evading car!
     """
-    dir_bx, dir_by, dir_bz = float(obs[0]), float(obs[1]), float(obs[2])
     dist_n = float(obs[3])
-    u_n, w_n = float(obs[4]), float(obs[5])
-    p_n, q_n, r_n = float(obs[6]), float(obs[7]), float(obs[8])
-    g_bx, g_by, g_bz = float(obs[9]), float(obs[10]), float(obs[11])
-    tv_bx, tv_by = float(obs[12]), float(obs[13])
-
     dist_m = max(10.0, dist_n * 1500.0)
-    v_mis = max(25.0, float(np.hypot(u_n, w_n) * 50.0))
-    t_go = min(8.0, dist_m / v_mis)
-
-    denom_z = g_bz if abs(g_bz) > 0.18 else (0.18 if g_bz >= 0.0 else -0.18)
-    tv_bz = -(tv_bx * g_bx + tv_by * g_by) / denom_z
-
-    dot_dg = dir_bx * g_bx + dir_by * g_by + dir_bz * g_bz
-    rx = dist_m * (dir_bx - dot_dg * g_bx)
-    ry = dist_m * (dir_by - dot_dg * g_by)
-    rz = dist_m * (dir_bz - dot_dg * g_bz)
-
-    vx = tv_bx * 25.0
-    vy = tv_by * 25.0
-    vz = tv_bz * 25.0
-
-    if dist_m > 160.0:
-        px = 0.50 * rx
-        py = 0.50 * ry
-        pz = 0.50 * rz
-    else:
-        t_lead = min(0.55, t_go)
-        px = rx + 0.40 * vx * t_lead
-        py = ry + 0.40 * vy * t_lead
-        pz = rz + 0.40 * vz * t_lead
-
-    aim_bx = dot_dg * g_bx + px / dist_m
-    aim_by = dot_dg * g_by + py / dist_m
-    aim_bz = dot_dg * g_bz + pz / dist_m
-    norm = max(1e-5, float(np.sqrt(aim_bx * aim_bx + aim_by * aim_by + aim_bz * aim_bz)))
-    aim_bx /= norm
-    aim_by /= norm
-    aim_bz /= norm
-
-    alpha_trim = float(np.arctan2(w_n, max(0.1, u_n)))
-    pitch_err = float(np.arctan2(aim_bz, max(0.05, aim_bx))) - alpha_trim
-
-    ang_dorsal = float(np.arctan2(aim_by, -aim_bz))
-    ang_ventral = float(np.arctan2(-aim_by, aim_bz))
-    roll_err = ang_dorsal if abs(ang_dorsal) <= abs(ang_ventral) else ang_ventral
-
-    pitch_cmd = float(np.clip(-3.5 * pitch_err - 0.30 * q_n, -1.0, 1.0))
-    roll_cmd = float(np.clip(1.8 * roll_err - 0.28 * p_n - 0.12 * r_n, -1.0, 1.0))
-    return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
+    lead_eff = 0.25 if dist_m < 180.0 else 0.0
+    return omni_3d_guidance(obs, lead_gain=lead_eff)
 
 
 def evasive_car_heuristic(car_obs: np.ndarray) -> np.ndarray:
