@@ -42,28 +42,36 @@ class ActorCritic(nn.Module):
         nn.init.orthogonal_(self.actor_net[-1].weight, gain=0.01)
 
     def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        mean = torch.tanh(self.actor_net(obs))
+        raw = self.actor_net(obs)
+        # For 24D GPS/Pursuit models, enforce exact physical left-right bilateral symmetry:
+        # pi(obs) = 0.5 * (f(obs) + mirror_act(f(mirror_obs(obs))))
+        if obs.shape[-1] == 24:
+            obs_m = obs.clone()
+            obs_m[..., [1, 6, 8, 9, 13, 16, 19, 22]] = -obs_m[..., [1, 6, 8, 9, 13, 16, 19, 22]]
+            raw_m = self.actor_net(obs_m)
+            raw_sym = torch.stack([0.5 * (raw[..., 0] + raw_m[..., 0]), 0.5 * (raw[..., 1] - raw_m[..., 1])], dim=-1)
+            mean = torch.tanh(raw_sym)
+        else:
+            mean = torch.tanh(raw)
         value = self.critic_net(obs).squeeze(-1)
         return mean, value
 
     def get_action_and_value(
         self, obs: torch.Tensor, action: torch.Tensor | None = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        raw_mean = self.actor_net(obs)
-        mean = torch.tanh(raw_mean)
+        mean, value = self.forward(obs)
         std = torch.exp(torch.clamp(self.log_std, -2.5, 0.5))
         dist = Normal(mean, std)
         if action is None:
             action = dist.sample()
         log_prob = dist.log_prob(action).sum(-1)
         entropy = dist.entropy().sum(-1)
-        value = self.critic_net(obs).squeeze(-1)
         return action, log_prob, entropy, value
 
     @torch.no_grad()
     def act_deterministic(self, obs_np: np.ndarray) -> np.ndarray:
         obs_t = torch.as_tensor(obs_np, dtype=torch.float32).unsqueeze(0)
-        mean = torch.tanh(self.actor_net(obs_t))
+        mean, _ = self.forward(obs_t)
         return np.clip(mean.squeeze(0).cpu().numpy(), -1.0, 1.0)
 
 

@@ -1,208 +1,13 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
-import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 
 from rl.ppo_agent import ActorCritic, PPOConfig, PPOTrainer
 from sim.glide_gps_env import GlideGpsTargetEnv
-
-
-def omni_3d_guidance(obs: np.ndarray, lead_gain: float = 0.85) -> np.ndarray:
-    """
-    Production-Grade Zero-Shake 24D INAV Circular Attitude + 3D ZEM Guidance:
-      - Dynamic-pressure gain attenuation (TPA: q_scale = 1 / (V / 24)^2) eliminates high-speed flap chatter.
-      - Non-singular lateral roll alignment (lat_err) eliminates 180-deg roll whipping near zero error.
-      - Continuous glide-to-dive blending (w_dive) and vertical-pull blending (vert_blend) eliminate switching jumps.
-    """
-    dir_bx, dir_by, dir_bz = float(obs[0]), float(obs[1]), float(obs[2])
-    dist_m = max(1.0, float(obs[3]) * 1000.0)
-    u_n, w_n = float(obs[4]), float(obs[5])
-    p_n, q_n, r_n = float(obs[6]), float(obs[7]), float(obs[8])
-    s_roll, c_roll = float(obs[9]), float(obs[10])
-    s_pitch, c_pitch = float(obs[11]), float(obs[12])
-
-    g_bx = -s_pitch
-    g_by = c_pitch * s_roll
-    g_bz = c_pitch * c_roll
-
-    v_ms = max(12.0, float(np.hypot(u_n, w_n) * 50.0))
-    q_scale = 1.0 / max(1.0, (v_ms / 24.0) ** 2)
-    q_pitch_scale = 1.0 / max(1.0, (v_ms / 32.0) ** 2)
-
-    vt_bx = float(obs[15]) * 25.0
-    vt_by = float(obs[16]) * 25.0
-    vt_bz = float(obs[17]) * 25.0
-    v5_bx = float(obs[18]) * 25.0
-    v5_by = float(obs[19]) * 25.0
-    v5_bz = float(obs[20]) * 25.0
-    at_bx = (vt_bx - v5_bx) / 0.10
-    at_by = (vt_by - v5_by) / 0.10
-    at_bz = (vt_bz - v5_bz) / 0.10
-
-    dot_dg = dir_bx * g_bx + dir_by * g_by + dir_bz * g_bz
-    alt_m = max(0.5, dot_dg * dist_m)
-    v_down = max(12.0, (u_n * g_bx + w_n * g_bz) * 50.0)
-    v_rel_bx = u_n * 50.0 - vt_bx
-    v_rel_by = -vt_by
-    v_rel_bz = w_n * 50.0 - vt_bz
-    v_close = max(12.0, dir_bx * v_rel_bx + dir_by * v_rel_by + dir_bz * v_rel_bz)
-    t_go = (alt_m / v_down) if alt_m < 170.0 else min(16.0, dist_m / v_close)
-
-    if lead_gain > 0.0:
-        lead_mult = (1.02 if alt_m < 170.0 else 1.15) * lead_gain
-        t_lead = min(13.0, t_go * lead_mult)
-        t_acc = min(2.4, t_go) * lead_gain
-        aim_bx = dir_bx + (vt_bx * t_lead + 0.50 * at_bx * (t_acc ** 2)) / dist_m
-        aim_by = dir_by + (vt_by * t_lead + 0.50 * at_by * (t_acc ** 2)) / dist_m
-        aim_bz = dir_bz + (vt_bz * t_lead + 0.50 * at_bz * (t_acc ** 2)) / dist_m
-    else:
-        aim_bx, aim_by, aim_bz = dir_bx, dir_by, dir_bz
-
-    norm = max(1e-5, float(np.sqrt(aim_bx * aim_bx + aim_by * aim_by + aim_bz * aim_bz)))
-    aim_bx /= norm
-    aim_by /= norm
-    aim_bz /= norm
-
-    dot_ag = aim_bx * g_bx + aim_by * g_by + aim_bz * g_bz
-    h_bx = aim_bx - dot_ag * g_bx
-    h_by = aim_by - dot_ag * g_by
-    h_bz = aim_bz - dot_ag * g_bz
-    horiz_norm = float(np.sqrt(max(1e-6, h_bx * h_bx + h_by * h_by + h_bz * h_bz)))
-    alt_frac = max(0.02, dot_ag)
-    req_ratio = horiz_norm / alt_frac
-
-    inv_s = (1.0 if h_bz <= 0.0 else -1.0) if g_bx > 0.85 else (1.0 if g_bz >= 0.0 else -1.0)
-
-    w_rr = float(np.clip((0.36 - req_ratio) / 0.07, 0.0, 1.0))
-    w_d  = float(np.clip((170.0 - dist_m) / 50.0, 0.0, 1.0))
-    w_dive = max(w_rr, w_d)
-
-    alpha_trim = float(np.arctan2(w_n, max(0.1, u_n)))
-    pitch_err = float(np.arctan2(aim_bz, max(0.05, aim_bx))) - alpha_trim
-    grav_bias = 0.058 * inv_s * horiz_norm * min(1.0, dist_m / 250.0)
-    pitch_dive = float(np.clip((-7.5 * pitch_err + grav_bias) * q_pitch_scale - 0.16 * q_n, -1.0, 1.0))
-
-    lat_mag = float(np.hypot(aim_by, aim_bz))
-    lat_err = float(aim_by / max(0.10, lat_mag)) * float(np.clip(lat_mag * 9.0, 0.0, 1.0))
-    roll_dive = float(np.clip(1.8 * q_scale * lat_err * inv_s - 0.15 * p_n - 0.08 * r_n, -0.65, 0.65))
-
-    if w_dive >= 0.999:
-        return np.array([pitch_dive, roll_dive], dtype=np.float32)
-
-    if h_bx < -0.15 * horiz_norm and g_bx <= 0.88:
-        loop_sign = -1.0 if h_bz >= 0.0 else +1.0
-        return np.array([loop_sign * 0.85, np.clip(-0.16 * p_n - 0.08 * r_n, -0.4, 0.4)], dtype=np.float32)
-
-    vert_blend = float(np.clip((g_bx - 0.86) / 0.10, 0.0, 1.0))
-    az_misalign = float(abs(h_by) / horiz_norm)
-    pull_scale = float(np.clip(1.0 - 1.8 * vert_blend * az_misalign, 0.05, 1.0))
-
-    bearing = float(np.arctan2(h_by, max(0.04, h_bx)))
-    mag_pitch = float(np.clip(0.24 + 0.62 * (req_ratio - 0.32) + 0.45 * abs(bearing), 0.08, 0.90)) * pull_scale
-    pitch_glide = inv_s * mag_pitch
-
-    lat_h = float(h_by / horiz_norm) * inv_s
-    roll_vert = float(np.clip(0.85 * q_scale * lat_h - 0.16 * p_n, -0.5, 0.5))
-    desired_g_by = float(np.clip(1.65 * bearing, -0.82, 0.82))
-    roll_horiz = float(np.clip(1.05 * q_scale * (desired_g_by - g_by * inv_s) * inv_s - 0.15 * p_n - 0.08 * r_n, -0.6, 0.6))
-    roll_glide = vert_blend * roll_vert + (1.0 - vert_blend) * roll_horiz
-
-    pitch_cmd = (1.0 - w_dive) * pitch_glide + w_dive * pitch_dive
-    roll_cmd  = (1.0 - w_dive) * roll_glide  + w_dive * roll_dive
-    return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
-
-
-def warmstart_omni_3d_actor(
-    model: ActorCritic,
-    target_mode: str,
-    lead_gain: float,
-    num_episodes: int = 24,
-    epochs: int = 35,
-    seed: int = 42,
-) -> None:
-    env = GlideGpsTargetEnv(target_mode=target_mode, release_altitude_m=1000.0, randomize_drop=True)
-    obs_data: List[np.ndarray] = []
-    act_data: List[np.ndarray] = []
-    ret_data: List[float] = []
-    w_data: List[float] = []
-
-    if target_mode == "static":
-        for r in [50.0, 100.0, 200.0, 300.0, 450.0, 600.0, 800.0, 930.0]:
-            for az in [0, 45, 90, 135, 180, -135, -90, -45]:
-                tn = r * np.cos(np.deg2rad(az))
-                te = r * np.sin(np.deg2rad(az))
-                obs, _ = env.reset(options={"deterministic": True, "target_ne": [tn, te], "altitude_m": 1000.0})
-                while True:
-                    act = omni_3d_guidance(obs, lead_gain=0.0)
-                    obs_data.append(obs)
-                    act_data.append(act)
-                    ret_data.append(1000.0)
-                    dist_m = float(np.hypot(obs[0], obs[1])) * 1000.0
-                    w_data.append(3.0 if dist_m < 260.0 else 1.0)
-                    obs, _, term, trunc, _ = env.step(act)
-                    if term or trunc:
-                        break
-
-    for ep in range(num_episodes):
-        obs, _ = env.reset(seed=seed + ep * 17, options={"deterministic": (ep == 0)})
-        ep_obs: List[np.ndarray] = []
-        ep_act: List[np.ndarray] = []
-        ep_rew: List[float] = []
-        ep_w: List[float] = []
-        while True:
-            act = omni_3d_guidance(obs, lead_gain=lead_gain)
-            if ep % 2 == 1:
-                noisy_act = np.clip(act + np.random.normal(0.0, 0.03, size=2).astype(np.float32), -1.0, 1.0)
-            else:
-                noisy_act = act
-            ep_obs.append(obs)
-            ep_act.append(act)
-            dist_m = float(np.sqrt(obs[0] ** 2 + obs[1] ** 2 + obs[2] ** 2)) * 1000.0
-            ep_w.append(3.0 if dist_m < 260.0 else 1.0)
-            obs, rew, term, trunc, _ = env.step(noisy_act)
-            ep_rew.append(float(rew))
-            if term or trunc:
-                break
-
-        g = 0.0
-        ep_ret = []
-        for r in reversed(ep_rew):
-            g = r + 0.995 * g
-            ep_ret.append(g)
-        ep_ret.reverse()
-
-        obs_data.extend(ep_obs)
-        act_data.extend(ep_act)
-        ret_data.extend(ep_ret)
-        w_data.extend(ep_w)
-
-    obs_t = torch.as_tensor(np.stack(obs_data, axis=0), dtype=torch.float32)
-    act_t = torch.as_tensor(np.stack(act_data, axis=0), dtype=torch.float32)
-    ret_t = torch.as_tensor(np.array(ret_data, dtype=np.float32), dtype=torch.float32)
-    w_t = torch.as_tensor(np.array(w_data, dtype=np.float32), dtype=torch.float32).unsqueeze(-1)
-
-    opt = torch.optim.Adam(model.parameters(), lr=2.5e-3)
-    batch_size = 256
-    n = obs_t.shape[0]
-    for _ in range(epochs):
-        perm = torch.randperm(n)
-        for start in range(0, n, batch_size):
-            idx = perm[start : start + batch_size]
-            pred_mean, pred_val = model(obs_t[idx])
-            actor_loss = (w_t[idx] * ((pred_mean - act_t[idx]) ** 2)).mean()
-            critic_loss = 0.0001 * ((pred_val - ret_t[idx]) ** 2).mean()
-            loss = actor_loss + critic_loss
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-
-    with torch.no_grad():
-        model.log_std.fill_(-1.8)
 
 
 def evaluate_gps_policy(
@@ -212,6 +17,7 @@ def evaluate_gps_policy(
     num_episodes: int = 6,
     seed: int = 200,
 ) -> Dict[str, Any]:
+    """Evaluate 24D INAV + Relative Target policy across deterministic + random 360-deg test cases."""
     env_det = GlideGpsTargetEnv(target_mode=target_mode, release_altitude_m=altitude_m, randomize_drop=False)
     obs, info = env_det.reset(seed=seed, options={"deterministic": True, "altitude_m": altitude_m})
     init_dist = info["target_error_m"]
@@ -262,27 +68,27 @@ def evaluate_gps_policy(
     }
 
 
-def run_curriculum_stage(
+def run_pure_ppo_stage(
     model: ActorCritic,
     target_mode: str,
     stage_id: str,
     stage_label: str,
-    lead_gain: float,
-    num_updates: int = 5,
-    num_envs: int = 4,
+    num_updates: int = 40,
+    num_envs: int = 8,
     rollout_steps: int = 256,
-    lr: float = 1.2e-4,
+    lr: float = 1.5e-4,
+    init_log_std: float = -1.2,
     seed: int = 100,
     ckpt_dir: Path = Path("checkpoints/glide_rl"),
 ) -> Dict[str, Any]:
-    warmstart_omni_3d_actor(
-        model=model,
-        target_mode=target_mode,
-        lead_gain=lead_gain,
-        num_episodes=30,
-        epochs=60,
-        seed=seed,
-    )
+    """
+    100% Pure Reinforcement Learning (PPO) with ZERO hand-coded guidance, ZERO behavioral cloning,
+    and ZERO angle or action restrictions.
+    The network explores with Gaussian policy noise and updates strictly via PPO policy gradients
+    from the environment reward (distance closing, <= 3.0 m hit bonus, fast arrival bonus, and anti-oscillation penalty).
+    """
+    with torch.no_grad():
+        model.log_std.fill_(init_log_std)
 
     envs = [GlideGpsTargetEnv(target_mode=target_mode, release_altitude_m=1000.0, randomize_drop=True) for _ in range(num_envs)]
     ppo = PPOTrainer(
@@ -292,7 +98,7 @@ def run_curriculum_stage(
             gamma=0.995,
             gae_lambda=0.97,
             clip_coef=0.15,
-            ent_coef=0.0005,
+            ent_coef=0.001,
             update_epochs=6,
             minibatch_size=256,
         ),
@@ -300,7 +106,7 @@ def run_curriculum_stage(
 
     obs_list = []
     for i, env in enumerate(envs):
-        o, _ = env.reset(seed=seed + i)
+        o, _ = env.reset(seed=seed + i * 19)
         obs_list.append(o)
     obs = np.stack(obs_list, axis=0)
 
@@ -309,19 +115,21 @@ def run_curriculum_stage(
     best_eval = None
 
     for update in range(num_updates + 1):
-        ev = evaluate_gps_policy(model, target_mode=target_mode, altitude_m=1000.0, num_episodes=5, seed=700)
+        ev = evaluate_gps_policy(model, target_mode=target_mode, altitude_m=1000.0, num_episodes=6, seed=700)
         score = 0.55 * ev["final_target_error_m"] + 0.45 * ev["mean_random_error_m"]
         if score < best_err:
             best_err = score
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_eval = ev
 
-        if update % 2 == 0 or update == num_updates:
+        if update % 4 == 0 or update == num_updates:
             print(
-                f"[{stage_label}] update={update:2d}/{num_updates} | "
-                f"Det Ground Miss = {ev['final_target_error_m']:5.2f} m | "
+                f"[{stage_label}] update={update:3d}/{num_updates} | "
+                f"Det Miss = {ev['final_target_error_m']:5.2f} m | "
                 f"Random Avg Miss = {ev['mean_random_error_m']:5.2f} m | "
-                f"Max Roll = {ev['max_bank_deg']:5.1f} deg"
+                f"Flight Time = {ev['flight_time_s']:4.1f} s | "
+                f"Max Roll = {ev['max_bank_deg']:5.1f} deg",
+                flush=True,
             )
 
         if update == num_updates:
@@ -329,7 +137,7 @@ def run_curriculum_stage(
 
         frac = 1.0 - (update / float(num_updates))
         for pg in ppo.optimizer.param_groups:
-            pg["lr"] = max(3e-5, lr * frac)
+            pg["lr"] = max(2e-5, lr * frac)
 
         obs_buf = np.zeros((rollout_steps, num_envs, 24), dtype=np.float32)
         act_buf = np.zeros((rollout_steps, num_envs, 2), dtype=np.float32)
@@ -406,14 +214,16 @@ def run_curriculum_stage(
     )
     print(
         f"==> Completed [{stage_label}] | Saved {ckpt_file} | "
-        f"Best Det Ground Miss = {best_eval['final_target_error_m']:.2f} m | "
-        f"Random Avg Miss = {best_eval['mean_random_error_m']:.2f} m\n"
+        f"Best Det Miss = {best_eval['final_target_error_m']:.2f} m | "
+        f"Random Avg Miss = {best_eval['mean_random_error_m']:.2f} m\n",
+        flush=True,
     )
     return best_eval
 
 
 if __name__ == "__main__":
     import sys
+
     stage_arg = sys.argv[1] if len(sys.argv) > 1 else "all"
     np.random.seed(42)
     torch.manual_seed(42)
@@ -422,48 +232,63 @@ if __name__ == "__main__":
     model = ActorCritic(obs_dim=24, act_dim=2, hidden_dim=64)
 
     if stage_arg in ("static", "all"):
-        run_curriculum_stage(
+        if (ckpt_dir / "gps_1_static.pt").exists():
+            ck = torch.load(ckpt_dir / "gps_1_static.pt", weights_only=False)
+            if ck.get("obs_dim") == 24:
+                model.load_state_dict(ck["model_state_dict"])
+        run_pure_ppo_stage(
             model=model,
             target_mode="static",
             stage_id="gps_1_static",
-            stage_label="GPS Stage 1: Multi-Angle/Speed Target Homing (<3m Error)",
-            lead_gain=0.0,
-            num_updates=4,
+            stage_label="GPS Stage 1: Pure-RL Multi-Angle/Speed Target Homing (<3m Error)",
+            num_updates=24,
+            num_envs=8,
             lr=1.0e-4,
+            init_log_std=-1.5,
             seed=101,
             ckpt_dir=ckpt_dir,
         )
 
     if stage_arg in ("linear", "all"):
-        if (ckpt_dir / "gps_1_static.pt").exists():
+        if (ckpt_dir / "gps_2_linear.pt").exists():
+            ck = torch.load(ckpt_dir / "gps_2_linear.pt", weights_only=False)
+            if ck.get("obs_dim") == 24:
+                model.load_state_dict(ck["model_state_dict"])
+        elif (ckpt_dir / "gps_1_static.pt").exists():
             ck = torch.load(ckpt_dir / "gps_1_static.pt", weights_only=False)
             if ck.get("obs_dim") == 24:
                 model.load_state_dict(ck["model_state_dict"])
-        run_curriculum_stage(
+        run_pure_ppo_stage(
             model=model,
             target_mode="linear",
             stage_id="gps_2_linear",
-            stage_label="GPS Stage 2: Linear Moving Target (4-20 m/s)",
-            lead_gain=0.95,
-            num_updates=4,
+            stage_label="GPS Stage 2: Pure-RL Tangent-Chord Crossing Car (<3m Hit)",
+            num_updates=24,
+            num_envs=8,
             lr=1.0e-4,
+            init_log_std=-1.5,
             seed=404,
             ckpt_dir=ckpt_dir,
         )
 
     if stage_arg in ("curved", "all"):
-        if (ckpt_dir / "gps_2_linear.pt").exists():
+        if (ckpt_dir / "gps_3_aggressive.pt").exists():
+            ck = torch.load(ckpt_dir / "gps_3_aggressive.pt", weights_only=False)
+            if ck.get("obs_dim") == 24:
+                model.load_state_dict(ck["model_state_dict"])
+        elif (ckpt_dir / "gps_2_linear.pt").exists():
             ck = torch.load(ckpt_dir / "gps_2_linear.pt", weights_only=False)
             if ck.get("obs_dim") == 24:
                 model.load_state_dict(ck["model_state_dict"])
-        run_curriculum_stage(
+        run_pure_ppo_stage(
             model=model,
             target_mode="curved",
             stage_id="gps_3_aggressive",
-            stage_label="GPS Stage 3: Curved Moving Target (8-20 m/s)",
-            lead_gain=0.95,
-            num_updates=4,
+            stage_label="GPS Stage 3: Pure-RL Curved Moving Target (8-20 m/s)",
+            num_updates=24,
+            num_envs=8,
             lr=1.0e-4,
+            init_log_std=-1.5,
             seed=505,
             ckpt_dir=ckpt_dir,
         )

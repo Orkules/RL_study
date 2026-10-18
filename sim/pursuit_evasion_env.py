@@ -463,7 +463,7 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.step_count += 1
 
         pitch_flap_deg = float(m_act[0]) * MAX_WING_FLAP_DEG
-        roll_flap_deg = float(m_act[1]) * 35.0
+        roll_flap_deg = float(m_act[1]) * MAX_WING_FLAP_DEG
         cmd_r_deg = float(np.clip(pitch_flap_deg + roll_flap_deg, -MAX_WING_FLAP_DEG, +MAX_WING_FLAP_DEG))
         cmd_l_deg = float(np.clip(pitch_flap_deg - roll_flap_deg, -MAX_WING_FLAP_DEG, +MAX_WING_FLAP_DEG))
 

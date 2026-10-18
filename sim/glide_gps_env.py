@@ -461,7 +461,7 @@ class GlideGpsTargetEnv(gym.Env):
             self.target_history_ned.pop(0)
 
         pitch_flap_deg = float(act[0]) * self.max_wing_flap_deg
-        roll_flap_deg = float(act[1]) * 35.0
+        roll_flap_deg = float(act[1]) * self.max_wing_flap_deg
         cmd_r_deg = float(np.clip(pitch_flap_deg + roll_flap_deg, -self.max_wing_flap_deg, +self.max_wing_flap_deg))
         cmd_l_deg = float(np.clip(pitch_flap_deg - roll_flap_deg, -self.max_wing_flap_deg, +self.max_wing_flap_deg))
 

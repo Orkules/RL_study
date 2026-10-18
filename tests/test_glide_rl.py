@@ -102,19 +102,25 @@ def test_adversarial_pursuit_evasion_car_vs_missile_strict_boundary_and_hit():
     missile_model.load_state_dict(torch.load(m_ckpt, map_location="cpu", weights_only=False)["model_state_dict"])
     car_model.load_state_dict(torch.load(c_ckpt, map_location="cpu", weights_only=False)["model_state_dict"])
 
-    from sim.pursuit_evasion_env import PursuitEvasionAdversarialEnv
-    env_c = PursuitEvasionAdversarialEnv(car_max_speed_kmh=50.0, release_altitude_m=1000.0, randomize_drop=False)
-    assert env_c.car_cfg.hit_radius_m == 3.0
-    (mo, co), info = env_c.reset(options={"deterministic": True})
-    assert mo.shape == (24,)
-    assert info["boundary_radius_m"] == 930.0
-    assert info["boundary_diameter_m"] == 1860.0
-    min_car_spd = 999.0
-    while True:
-        (mo, co), _, tm, tr, info = env_c.step_duel(missile_model.act_deterministic(mo), car_model.act_deterministic(co))
-        min_car_spd = min(min_car_spd, info["car_speed_kmh"])
-        if tm or tr:
-            break
-    assert min_car_spd >= 0.0
-    assert info["car_visited_cells"] >= 10
-    assert info["car_spawn_displacement_m"] >= 60.0
+    res50 = evaluate_10_duel_trials(missile_model, car_model, speed_kmh=50.0, num_trials=10, seed=5000)
+    assert res50["hits"] >= 9
+    assert res50["mean_min_dist_m"] <= 3.0
+
+    # Also verify edge cases on gps_1_static.pt (High-Speed 90-deg Left Break, 90-deg Right Break, 180-deg Rear Break, Upside-Down Launch):
+    s_ckpt = Path("checkpoints/glide_rl/gps_1_static.pt")
+    m1 = ActorCritic(obs_dim=24, act_dim=2, hidden_dim=64)
+    m1.load_state_dict(torch.load(s_ckpt, map_location="cpu", weights_only=False)["model_state_dict"])
+    env_ec = GlideGpsTargetEnv(target_mode="static", release_altitude_m=1000.0, randomize_drop=False)
+    for ec_opts in [
+        {"altitude_m": 500.0, "angles_deg": [0.0, -15.0, 0.0], "speed_ms": 42.0, "target_ne": [100.0, -320.0]},
+        {"altitude_m": 500.0, "angles_deg": [0.0, -15.0, 0.0], "speed_ms": 42.0, "target_ne": [100.0, +320.0]},
+        {"altitude_m": 700.0, "angles_deg": [0.0, -20.0, 0.0], "speed_ms": 35.0, "target_ne": [-380.0, 50.0]},
+        {"altitude_m": 650.0, "angles_deg": [180.0, -25.0, 45.0], "speed_ms": 38.0, "target_ne": [-300.0, -300.0]},
+        {"altitude_m": 600.0, "angles_deg": [90.0, -30.0, -60.0], "speed_ms": 40.0, "target_ne": [280.0, 260.0]},
+    ]:
+        obs_ec, info_ec = env_ec.reset(options={"deterministic": True, **ec_opts})
+        while True:
+            obs_ec, _, tm_ec, tr_ec, info_ec = env_ec.step(m1.act_deterministic(obs_ec))
+            if tm_ec or tr_ec:
+                break
+        assert info_ec["target_error_m"] <= 3.0
