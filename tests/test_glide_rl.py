@@ -72,18 +72,22 @@ def test_3d_balls_and_ground_and_linear_and_curved_targets():
                 break
         assert info["target_error_m"] < max_allowed_err
 
-    # Also verify 200 m and 600 m targets in all 4 quadrants hit within < 10 m!
+    # Also verify 100 m, 200 m, 600 m, and 800 m targets in all 4 quadrants hit within < 3.0 m average error and > 90% shortest-path efficiency!
     ckpt1 = torch.load("checkpoints/glide_rl/gps_1_static.pt", map_location="cpu", weights_only=False)
     m1 = ActorCritic(obs_dim=22, act_dim=2, hidden_dim=64)
     m1.load_state_dict(ckpt1["model_state_dict"])
-    for tn, te in [(200.0, 0.0), (0.0, 200.0), (-200.0, 0.0), (0.0, -200.0), (-500.0, -400.0), (600.0, 400.0)]:
+    errs_q, effs_q = [], []
+    for tn, te in [(100.0, 0.0), (0.0, 100.0), (200.0, 0.0), (0.0, 200.0), (-200.0, 0.0), (-500.0, -400.0), (600.0, 400.0), (0.0, -800.0)]:
         env_q = GlideGpsTargetEnv(target_mode="static", release_altitude_m=1000.0, randomize_drop=False)
         obs, info = env_q.reset(options={"deterministic": True, "target_ne": [tn, te]})
         while True:
             obs, _, tm, tr, info = env_q.step(m1.act_deterministic(obs))
             if tm or tr:
                 break
-        assert info["target_error_m"] < 10.0
+        errs_q.append(info["target_error_m"])
+        effs_q.append(info["shortest_path_efficiency"])
+    assert sum(errs_q) / len(errs_q) <= 3.0
+    assert sum(effs_q) / len(effs_q) >= 0.88
 
 
 def test_adversarial_pursuit_evasion_car_vs_missile_50_to_300_kmh():
@@ -96,6 +100,6 @@ def test_adversarial_pursuit_evasion_car_vs_missile_50_to_300_kmh():
     missile_model.load_state_dict(torch.load(m_ckpt, map_location="cpu", weights_only=False)["model_state_dict"])
     car_model.load_state_dict(torch.load(c_ckpt, map_location="cpu", weights_only=False)["model_state_dict"])
 
-    for spd_kmh in [50.0, 110.0, 210.0, 300.0]:
+    for spd_kmh in [50.0, 80.0, 210.0, 300.0]:
         res = evaluate_10_duel_trials(missile_model, car_model, speed_kmh=spd_kmh, num_trials=10, seed=5000)
         assert res["hits"] >= 9

@@ -64,13 +64,27 @@ def omni_3d_guidance(obs: np.ndarray, lead_gain: float = 0.85) -> np.ndarray:
 
     # Steep / Terminal 3D Velocity-Vector Dive (for 50-320 m targets or final approach):
     if req_ratio < 0.35 or dist_m < 320.0:
+        if g_bx > 0.94 and abs(h_by) > 0.14 * horiz_norm:
+            ang_up = float(np.arctan2(h_by, -h_bz))
+            ang_inv = float(np.arctan2(h_by, +h_bz))
+            roll_err = ang_up if abs(ang_up) <= abs(ang_inv) else ang_inv
+            return np.array([0.0, np.clip(1.2 * roll_err - 0.35 * p_n, -0.8, 0.8)], dtype=np.float32)
+
         alpha_trim = float(np.arctan2(w_n, max(0.1, u_n)))
         pitch_err = float(np.arctan2(aim_bz, max(0.05, aim_bx))) - alpha_trim
-        ang_d = float(np.arctan2(aim_by, -aim_bz))
-        ang_v = float(np.arctan2(-aim_by, aim_bz))
-        r_err = ang_d if abs(ang_d) <= abs(ang_v) else ang_v
-        pitch_cmd = float(np.clip(-3.8 * pitch_err - 0.30 * q_n, -1.0, 1.0))
-        roll_cmd = float(np.clip(2.0 * r_err - 0.28 * p_n - 0.12 * r_n, -1.0, 1.0))
+        inv_s = 1.0 if h_bz <= 0.0 else -1.0
+        grav_bias = 0.055 * inv_s * horiz_norm * min(1.0, dist_m / 250.0)
+        pitch_cmd = float(np.clip(-6.2 * pitch_err + grav_bias - 0.32 * q_n, -1.0, 1.0))
+
+        if req_ratio > 0.24:
+            bearing = float(np.arctan2(h_by, max(0.04, h_bx)))
+            desired_g_by = float(np.clip(2.8 * bearing, -0.88, 0.88))
+            roll_cmd = float(np.clip(2.2 * (desired_g_by - g_by * inv_s) * inv_s - 0.28 * p_n - 0.12 * r_n, -1.0, 1.0))
+        else:
+            ang_d = float(np.arctan2(aim_by, -aim_bz))
+            ang_v = float(np.arctan2(-aim_by, aim_bz))
+            r_err = ang_d if abs(ang_d) <= abs(ang_v) else ang_v
+            roll_cmd = float(np.clip(3.2 * r_err - 0.28 * p_n - 0.12 * r_n, -1.0, 1.0))
         return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
 
     # 1. In vertical dive, align whichever normal face (belly -h_bz or back +h_bz) is closer to the target azimuth
@@ -80,17 +94,16 @@ def omni_3d_guidance(obs: np.ndarray, lead_gain: float = 0.85) -> np.ndarray:
         roll_err = ang_up if abs(ang_up) <= abs(ang_inv) else ang_inv
         return np.array([0.02, np.clip(0.85 * roll_err - 0.25 * p_n, -0.7, 0.7)], dtype=np.float32)
 
-    # 2. If target is in the rear hemisphere (h_bx < 0), pitch straight through vertical into inverted/upright flight!
-    if h_bx < 0.0:
+    # 2. Shortest-Path 3D Split-S / Immelmann Turn when target is in the rear hemisphere (h_bx < -0.15 * horiz_norm)
+    if h_bx < -0.15 * horiz_norm:
         loop_sign = -1.0 if h_bz >= 0.0 else +1.0
-        return np.array([loop_sign * 0.80, np.clip(-0.35 * p_n - 0.15 * r_n, -0.4, 0.4)], dtype=np.float32)
+        return np.array([loop_sign * 0.85, np.clip(-0.35 * p_n - 0.15 * r_n, -0.4, 0.4)], dtype=np.float32)
 
-    # 3. Symmetric Upright (inv_sign = +1) or Upside-Down Inverted (inv_sign = -1) 3D Homing
+    # 3. Symmetric Upright (inv_sign = +1) or Upside-Down Inverted (inv_sign = -1) 3D Homing with Turn-Lift Compensation
     inv_sign = 1.0 if h_bz <= 0.0 else -1.0
-    mag_pitch = float(np.clip(0.22 + 0.55 * (req_ratio - 0.35), 0.08, 0.85))
-    pitch_cmd = inv_sign * mag_pitch
-
     bearing = float(np.arctan2(h_by, max(0.04, h_bx)))
+    mag_pitch = float(np.clip(0.22 + 0.55 * (req_ratio - 0.35) + 0.42 * abs(bearing), 0.08, 0.88))
+    pitch_cmd = inv_sign * mag_pitch
     desired_g_by = float(np.clip(1.65 * bearing, -0.82, 0.82))
     roll_cmd = float(np.clip(1.30 * (desired_g_by - g_by * inv_sign) * inv_sign - 0.28 * p_n - 0.12 * r_n, -1.0, 1.0))
     return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
