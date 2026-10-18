@@ -1806,10 +1806,7 @@
         const vy = simState.altM * WORLD_SCALE;
         const vz = simState.posE * WORLD_SCALE;
         vehicleGroup.position.set(vx, vy, vz);
-        // Scale vehicle dynamically when in Overview mode so it is ALWAYS big and clearly visible!
-        const camDist = camera.position.distanceTo(vehicleGroup.position);
-        const sVis = camPreset === "overview" ? Math.max(1.0, Math.min(22.0, camDist / 260.0)) : 1.0;
-        vehicleGroup.scale.set(sVis, sVis, sVis);
+        vehicleGroup.scale.set(1, 1, 1);
 
         // Update live ground shadow & vertical plumb line under the missile
         groundShadowMesh.position.set(vx, 1.5, vz);
@@ -1890,7 +1887,7 @@
         trailGeo.setDrawRange(0, nPts);
 
         const stepM = Math.max(1, Math.floor(nPts / markerSpheres.length));
-        const markerRad = camPreset === "overview" ? 32.0 : 5.5;
+        const markerRad = camPreset === "overview" ? 6.0 : 3.5;
         for (let m = 0; m < markerSpheres.length; m++) {
           const idx = m * stepM;
           if (idx < nPts) {
