@@ -318,14 +318,14 @@
       <!-- Tape-Style Transport Controls (Cue, Play, Pause, Restart, Save Data) + Drop Height -->
       <div class="box">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:4px;">
-          <div style="display:flex;gap:4px;flex-wrap:wrap;">
-            <button id="btn-cue" class="active" style="padding:5px 9px;font-size:11.5px;" title="Cue / Ready at t=0 (Stopped)">Cue</button>
-            <button id="btn-play" class="primary" style="padding:5px 9px;font-size:11.5px;" title="Start / Play Simulation">Play</button>
-            <button id="btn-pause" style="padding:5px 9px;font-size:11.5px;" title="Pause Simulation">Pause</button>
-            <button id="btn-reset" style="padding:5px 9px;font-size:11.5px;" title="Restart from t=0 with Same Parameters">Restart</button>
-            <button id="btn-save-flight" style="padding:5px 9px;font-size:11.5px;border-color:#22c55e;background:rgba(34,197,94,0.18);color:#bbf7d0;font-weight:700;">Save Data</button>
+          <div style="display:flex;gap:5px;align-items:center;">
+            <button id="btn-play" class="primary" style="padding:4px 10px;font-size:14px;line-height:1;" title="Play">&#9654;</button>
+            <button id="btn-pause" style="padding:4px 10px;font-size:14px;line-height:1;" title="Pause">&#9208;</button>
+            <button id="btn-cue" class="active" style="padding:4px 10px;font-size:14px;line-height:1;" title="Stop (Reset to t=0)">&#9209;</button>
+            <button id="btn-reset" style="padding:4px 10px;font-size:14px;line-height:1;" title="Restart from t=0">&#8635;</button>
+            <button id="btn-save-flight" style="padding:5px 10px;font-size:11.5px;border-color:#22c55e;background:rgba(34,197,94,0.18);color:#bbf7d0;font-weight:700;">Save Data</button>
           </div>
-          <span id="conn-badge" style="color:#facc15;font-size:10px;white-space:nowrap;">Cued (t=0)</span>
+          <span id="conn-badge" style="color:#facc15;font-size:10px;white-space:nowrap;">Stopped (t=0)</span>
         </div>
         <div id="save-flight-status" style="margin-top:5px;font-size:11px;color:#86efac;display:none;"></div>
 
@@ -1735,7 +1735,7 @@
       if (btnPlay)  btnPlay.classList.toggle("active", state === "play");
       if (btnPause) btnPause.classList.toggle("active", state === "pause");
       if (connBadge) {
-        if (state === "cue")   { connBadge.textContent = "Cued (t=0)"; connBadge.style.color = "#facc15"; }
+        if (state === "cue")   { connBadge.textContent = "Stopped (t=0)"; connBadge.style.color = "#facc15"; }
         if (state === "play")  { connBadge.textContent = "Running";    connBadge.style.color = "#4ade80"; }
         if (state === "pause") { connBadge.textContent = "Paused";     connBadge.style.color = "#fb923c"; }
       }
