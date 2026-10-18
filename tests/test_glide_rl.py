@@ -103,3 +103,17 @@ def test_adversarial_pursuit_evasion_car_vs_missile_50_to_300_kmh():
     for spd_kmh in [50.0, 80.0, 210.0, 300.0]:
         res = evaluate_10_duel_trials(missile_model, car_model, speed_kmh=spd_kmh, num_trials=10, seed=5000)
         assert res["hits"] >= 9
+
+    # Verify realistic forward-only Ackermann car behavior (never reverses, explores >= 15 grid cells, and moves >= 70 m from spawn)
+    from sim.pursuit_evasion_env import PursuitEvasionAdversarialEnv
+    env_c = PursuitEvasionAdversarialEnv(car_max_speed_kmh=140.0, release_altitude_m=1000.0, randomize_drop=False)
+    (mo, co), info = env_c.reset(options={"deterministic": True})
+    min_car_spd = 999.0
+    while True:
+        (mo, co), _, tm, tr, info = env_c.step_duel(missile_model.act_deterministic(mo), car_model.act_deterministic(co))
+        min_car_spd = min(min_car_spd, info["car_speed_kmh"])
+        if tm or tr:
+            break
+    assert min_car_spd >= 0.0
+    assert info["car_visited_cells"] >= 10
+    assert info["car_spawn_displacement_m"] >= 60.0

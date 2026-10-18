@@ -23,21 +23,22 @@ SPEED_TIERS_KMH = [50.0, 80.0, 110.0, 140.0, 175.0, 210.0, 250.0, 300.0]
 def high_speed_dive_pursuit(obs: np.ndarray) -> np.ndarray:
     """
     Universal 360-Degree All-Range (50 m to 1,000 m) + Terminal 3D Dive Car Hunter:
-      - Glides out to any distance (140 m to 950 m) in all 4 quadrants, then dives straight into the evading car!
+      - Uses the 22D past-position history in the final 220 m dive to lead the forward-driving Ackermann car!
     """
     dist_n = float(obs[3])
     dist_m = max(10.0, dist_n * 1500.0)
-    lead_eff = 0.25 if dist_m < 180.0 else 0.0
+    lead_eff = 0.35 if dist_m < 220.0 else 0.0
     return omni_3d_guidance(obs, lead_gain=lead_eff)
 
 
 def evasive_car_heuristic(car_obs: np.ndarray) -> np.ndarray:
     """
-    Differential-Game Evasive Car Maneuvering Baseline:
+    Realistic Ackermann Evasive Car Driving Policy:
       - Reads the missile's 3D position (rel_x_car, rel_y_car, alt_n), 3D velocity (mv_x_car, mv_y_car, mv_d),
         and 3D nose attitude (nose_x_car, nose_y_car) in the car's frame.
-      - Breaks line-of-sight by accelerating at full throttle and jinking orthogonal (90 deg) to the missile's
-        approach vector, then executing a sudden terminal break-turn when time-to-impact t_go < 4.5 s!
+      - Maintains continuous forward speed (throttle > 0.75) to explore new ground territory and avoid stagnation.
+      - Executes smooth Ackermann S-curves orthogonal (90 deg) to the missile's predicted impact vector,
+        with a committed high-G Ackermann break-turn when time-to-impact t_go < 4.2 s!
     """
     rel_x = float(car_obs[0])
     rel_y = float(car_obs[1])
@@ -46,25 +47,27 @@ def evasive_car_heuristic(car_obs: np.ndarray) -> np.ndarray:
     mv_y = float(car_obs[4])
     nose_x = float(car_obs[7])
     nose_y = float(car_obs[8])
+    cur_steer = float(car_obs[13])
     t_go_n = float(car_obs[15])  # t_go / 30.0
 
-    # Missile approach vector in car frame (blend velocity + nose attitude)
-    threat_x = 0.7 * mv_x + 0.3 * nose_x - 0.5 * rel_x
-    threat_y = 0.7 * mv_y + 0.3 * nose_y - 0.5 * rel_y
+    # Missile approach vector in car frame (blend velocity + nose attitude + relative LOS)
+    threat_x = 0.65 * mv_x + 0.25 * nose_x - 0.55 * rel_x
+    threat_y = 0.65 * mv_y + 0.25 * nose_y - 0.55 * rel_y
     threat_ang = float(np.arctan2(threat_y, threat_x))
 
-    # Desired evasion direction is perpendicular (orthogonal ±90 deg) to the missile's attack vector,
-    # switching side sharply in the final 4.5 seconds (t_go_n < 0.15) to spoil the missile's lead prediction!
-    if t_go_n < 0.15:
+    # Smooth Ackermann evasion into open territory:
+    if t_go_n < 0.14:
+        # Terminal Ackermann break-turn: slightly modulate throttle (0.72) so front tires have maximum lateral grip!
         perp_sign = -1.0 if threat_y >= 0.0 else +1.0
-        steer_cmd = float(np.clip(perp_sign * 0.95, -1.0, 1.0))
-        throttle_cmd = 1.0
+        steer_cmd = float(np.clip(perp_sign * 0.85, -1.0, 1.0))
+        throttle_cmd = 0.72
     else:
         perp_sign = +1.0 if threat_y >= 0.0 else -1.0
-        desired_offset = threat_ang + perp_sign * (np.pi / 2.0)
+        desired_offset = threat_ang + perp_sign * (0.55 * np.pi)
         desired_offset = float((desired_offset + np.pi) % (2.0 * np.pi) - np.pi)
-        steer_cmd = float(np.clip(1.4 * desired_offset, -1.0, 1.0))
-        throttle_cmd = 1.0
+        # Smooth steering command blended with current steer angle for natural highway/track arcs
+        steer_cmd = float(np.clip(0.95 * desired_offset + 0.20 * cur_steer, -0.85, 0.85))
+        throttle_cmd = 0.95
 
     return np.array([steer_cmd, throttle_cmd], dtype=np.float32)
 

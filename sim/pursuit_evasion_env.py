@@ -23,24 +23,27 @@ from sim.wing_linkage import (
 @dataclass
 class EvaderCarConfig:
     """
-    Realistic Ackermann Kinematic-Dynamic Bicycle Model for the Evasive Car (F1TENTH / Pursuit-Evasion RL literature):
-      - Wheelbase L = 2.65 m
-      - Max front-wheel steering angle delta_max = 32.0 deg (0.5585 rad)
-      - Max engine forward acceleration a_accel_max = 9.5 m/s^2 (sports/supercar launch)
-      - Max braking / reverse deceleration a_brake_max = 12.0 m/s^2
-      - Aerodynamic + rolling drag coefficient c_drag = 0.0018 m^-1
-      - Tire cornering lateral acceleration limit a_lat_max = 1.35 * 9.81 = 13.24 m/s^2 (prevents unphysical instant turns at 200+ km/h!)
-      - Steering actuator first-order lag tau_steer = 0.08 s
+    Realistic Ackermann Kinematic-Dynamic Bicycle Model for the Evasive Car:
+      - Wheelbase L = 2.65 m, track width W = 1.56 m
+      - Max front-wheel steering angle delta_max = 30.0 deg (0.5236 rad) -> minimum turning radius R_min = L / tan(30 deg) = 4.59 m
+      - Max steering rack rate = 50.0 deg/s (0.8727 rad/s) + steering lag tau_steer = 0.18 s (no instant wheel snapping)
+      - Forward-only driving (v >= 0.0 m/s): braking decelerates to 0.0 m/s, never instant reverse!
+      - Realistic engine forward acceleration a_accel_max = 4.8 m/s^2 (0-100 km/h in ~5.8 s, tapering with speed & drag)
+      - Realistic hydraulic braking deceleration a_brake_max = 8.0 m/s^2
+      - Tire cornering lateral grip limit a_lat_max = 0.92 * 9.81 = 9.03 m/s^2 (forces realistic turning radius R >= v^2 / a_lat_max)
       - Hit capture radius = 48.0 m on the ground
     """
 
     wheelbase_m: float = 2.65
-    max_steer_deg: float = 32.0
-    max_accel_ms2: float = 9.5
-    max_brake_ms2: float = 12.0
-    max_lat_g: float = 1.35
-    drag_coeff: float = 0.0018
-    steer_tau_s: float = 0.08
+    track_width_m: float = 1.56
+    max_steer_deg: float = 30.0
+    max_steer_rate_degs: float = 50.0
+    max_accel_ms2: float = 4.8
+    max_brake_ms2: float = 8.0
+    max_lat_g: float = 0.92
+    drag_coeff: float = 0.0022
+    rolling_resist_ms2: float = 0.18
+    steer_tau_s: float = 0.18
     hit_radius_m: float = 48.0
 
 
@@ -106,6 +109,8 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.car_steer = 0.0
         self.car_vel_ne = np.zeros(2, dtype=np.float64)
         self.target_history_ned: list[np.ndarray] = []
+        self.visited_cells: set[Tuple[int, int]] = set()
+        self.max_spawn_displacement_m = 0.0
 
         self.step_count = 0
         self.max_steps = 1600
@@ -292,57 +297,76 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.step_count = 0
         self.prev_dist_3d = self._compute_dist_3d()
         self.min_dist_3d = self.prev_dist_3d
+        self.visited_cells = {(int(np.floor(self.car_pos_ne[0] / 12.0)), int(np.floor(self.car_pos_ne[1] / 12.0)))}
+        self.max_spawn_displacement_m = 0.0
 
         return (self.get_missile_obs(), self.get_car_obs()), self.get_info()
 
     def _step_car_substep(self, steer_cmd: float, throttle_cmd: float, sub_dt: float) -> None:
         """
-        Realistic Ackermann Bicycle Model with Tire Lateral Grip Limit:
-          - steer_cmd in [-1, +1] -> target front wheel angle delta
-          - throttle_cmd in [-1, +1] -> forward acceleration (>0) or braking/reverse (<0)
-          - Lateral centripetal acceleration |v^2 * tan(delta) / L| is physically capped by tire grip (1.35 G),
-            which naturally forces a fast-moving car (e.g. 200 km/h) to brake or make wider turns!
+        Realistic Ackermann Bicycle Model with Forward-Only Drivetrain, Steer-Rate Limit, and Tire Lateral Grip Limit:
+          - steer_cmd in [-1, +1] -> target front wheel angle delta (limited by max_steer_deg, steer_tau_s, and max_steer_rate_degs)
+          - Speed-dependent Ackermann steering limit: delta_eff_max = min(delta_max, arctan(L * a_lat_max / v^2))
+          - throttle_cmd in [-1, +1] -> engine forward acceleration (>0, tapering at high speed) or hydraulic braking (<0, down to 0 m/s)
+          - Forward-only velocity (v >= 0.0 m/s): the car NEVER reverses or oscillates back-and-forth!
         """
         max_steer_rad = np.deg2rad(self.car_cfg.max_steer_deg)
-        target_steer = float(np.clip(steer_cmd, -1.0, 1.0)) * max_steer_rad
+        max_lat_acc = self.car_cfg.max_lat_g * 9.81
+        # Speed-dependent maximum Ackermann steering angle so tires don't exceed lateral grip limit
+        if self.car_speed > 2.5:
+            speed_steer_limit = float(np.arctan((self.car_cfg.wheelbase_m * max_lat_acc) / (self.car_speed ** 2)))
+            eff_max_steer = min(max_steer_rad, speed_steer_limit)
+        else:
+            eff_max_steer = max_steer_rad
+
+        target_steer = float(np.clip(steer_cmd, -1.0, 1.0)) * eff_max_steer
         alpha_st = sub_dt / (self.car_cfg.steer_tau_s + sub_dt)
-        self.car_steer += alpha_st * (target_steer - self.car_steer)
+        desired_delta = alpha_st * (target_steer - self.car_steer)
+        max_step_steer = np.deg2rad(self.car_cfg.max_steer_rate_degs) * sub_dt
+        self.car_steer += float(np.clip(desired_delta, -max_step_steer, max_step_steer))
+        self.car_steer = float(np.clip(self.car_steer, -eff_max_steer, eff_max_steer))
 
         if throttle_cmd >= 0.0:
-            lon_acc = float(throttle_cmd) * self.car_cfg.max_accel_ms2
+            # Engine power curve tapers smoothly as speed approaches top speed
+            speed_ratio = float(np.clip(self.car_speed / max(5.0, self.car_max_speed_ms), 0.0, 1.0))
+            power_taper = max(0.20, 1.0 - 0.55 * (speed_ratio ** 1.4))
+            lon_acc = float(throttle_cmd) * self.car_cfg.max_accel_ms2 * power_taper
         else:
             lon_acc = float(throttle_cmd) * self.car_cfg.max_brake_ms2
 
-        # Aerodynamic drag
-        drag_acc = self.car_cfg.drag_coeff * self.car_speed * abs(self.car_speed)
-        self.car_speed += (lon_acc - drag_acc) * sub_dt
-        self.car_speed = float(np.clip(self.car_speed, -0.20 * self.car_max_speed_ms, self.car_max_speed_ms))
+        # Aerodynamic drag + rolling resistance + cornering scrub drag
+        drag_acc = (
+            self.car_cfg.drag_coeff * (self.car_speed ** 2)
+            + (self.car_cfg.rolling_resist_ms2 if self.car_speed > 0.05 else 0.0)
+            + 0.35 * abs(np.tan(self.car_steer)) * (self.car_speed / max(10.0, self.car_max_speed_ms))
+        )
+        # Forward-only car: speed is strictly in [0.0, car_max_speed_ms] (no instant reverse!)
+        self.car_speed = float(np.clip(self.car_speed + (lon_acc - drag_acc) * sub_dt, 0.0, self.car_max_speed_ms))
 
-        # Ackermann yaw rate with tire lateral G-limit (a_lat_max = 1.35 * 9.81 m/s^2)
-        raw_curvature = np.tan(self.car_steer) / self.car_cfg.wheelbase_m
-        raw_yaw_rate = self.car_speed * raw_curvature
-        max_lat_acc = self.car_cfg.max_lat_g * 9.81
-        if abs(self.car_speed) > 1.0:
-            max_yaw_rate = max_lat_acc / abs(self.car_speed)
-            yaw_rate = float(np.clip(raw_yaw_rate, -max_yaw_rate, max_yaw_rate))
-        else:
-            yaw_rate = float(raw_yaw_rate)
+        # Exact Ackermann bicycle turning curvature kappa = tan(delta) / L with CG slip angle beta = arctan(0.5 * tan(delta))
+        beta_slip = float(np.arctan(0.5 * np.tan(self.car_steer)))
+        yaw_rate = (self.car_speed / self.car_cfg.wheelbase_m) * np.tan(self.car_steer) * np.cos(beta_slip)
+        if self.car_speed > 1.0:
+            max_yaw_rate = max_lat_acc / self.car_speed
+            yaw_rate = float(np.clip(yaw_rate, -max_yaw_rate, max_yaw_rate))
 
         self.car_yaw = float((self.car_yaw + yaw_rate * sub_dt + np.pi) % (2.0 * np.pi) - np.pi)
-        self.car_vel_ne[0] = self.car_speed * np.cos(self.car_yaw)
-        self.car_vel_ne[1] = self.car_speed * np.sin(self.car_yaw)
+        course_ang = self.car_yaw + beta_slip
+        self.car_vel_ne[0] = self.car_speed * np.cos(course_ang)
+        self.car_vel_ne[1] = self.car_speed * np.sin(course_ang)
         self.car_pos_ne += self.car_vel_ne * sub_dt
 
-        # Keep car inside its local 42 m RC driving zone around car_spawn_center (which can be anywhere 140-520 m from origin!)
+        # Large RC car circuit zone (radius 85 m around car_spawn_center = 170 m diameter track):
+        # Smooth Ackermann bank inward when approaching the 85 m track perimeter so the car drives continuous forward circuits without ever stopping or teleporting!
         rel_c = self.car_pos_ne - self.car_spawn_center
         r_car = float(np.hypot(rel_c[0], rel_c[1]))
-        if r_car > 42.0:
-            rel_c *= 42.0 / r_car
-            self.car_pos_ne = self.car_spawn_center + rel_c
+        if r_car > 70.0:
             inward_yaw = float(np.arctan2(-rel_c[1], -rel_c[0]))
-            self.car_yaw = inward_yaw + float(np.clip(self.car_steer, -0.45, 0.45))
-            self.car_vel_ne[0] = self.car_speed * np.cos(self.car_yaw)
-            self.car_vel_ne[1] = self.car_speed * np.sin(self.car_yaw)
+            yaw_diff = float((inward_yaw - self.car_yaw + np.pi) % (2.0 * np.pi) - np.pi)
+            turn_rate_in = min(max_lat_acc / max(2.5, self.car_speed), 1.8)
+            self.car_yaw = float((self.car_yaw + turn_rate_in * sub_dt * np.sign(yaw_diff) + np.pi) % (2.0 * np.pi) - np.pi)
+            if r_car > 85.0:
+                self.car_pos_ne = self.car_spawn_center + rel_c * (85.0 / r_car)
 
     def _step_missile_substep(self, cmd_r_deg: float, cmd_l_deg: float, sub_dt: float) -> None:
         alpha_s = sub_dt / (self.aero_cfg.servo_tau_s + sub_dt)
@@ -479,11 +503,39 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         dist_dec = self.prev_dist_3d - cur_dist_3d
         self.prev_dist_3d = cur_dist_3d
 
-        # Zero-Sum Competitive Rewards:
+        # Spatial Exploration / New-Area Bonus for the Car (12 m x 12 m grid cells + expanding radius from spawn):
+        cell_xy = (int(np.floor(self.car_pos_ne[0] / 12.0)), int(np.floor(self.car_pos_ne[1] / 12.0)))
+        new_area_bonus = 0.0
+        if cell_xy not in self.visited_cells:
+            self.visited_cells.add(cell_xy)
+            new_area_bonus += 6.5
+
+        spawn_disp = float(np.hypot(self.car_pos_ne[0] - self.car_spawn_center[0], self.car_pos_ne[1] - self.car_spawn_center[1]))
+        if spawn_disp > self.max_spawn_displacement_m:
+            new_area_bonus += 1.5 * (spawn_disp - self.max_spawn_displacement_m)
+            self.max_spawn_displacement_m = spawn_disp
+
+        # Missile predicted ground impact point (linear ballistic projection to z=0) & car orthogonal evasion velocity:
+        alt_m = max(1.0, float(-self.pos_ned[2]))
+        vz_down = max(8.0, float(self.vel_ned[2]))
+        t_imp = min(20.0, alt_m / vz_down)
+        pred_imp_n = float(self.pos_ned[0] + self.vel_ned[0] * t_imp)
+        pred_imp_e = float(self.pos_ned[1] + self.vel_ned[1] * t_imp)
+        dist_to_pred_imp = float(np.hypot(self.car_pos_ne[0] - pred_imp_n, self.car_pos_ne[1] - pred_imp_e))
+        forward_speed_bonus = 0.8 * (self.car_speed / max(5.0, self.car_max_speed_ms))
+        stagnation_penalty = -1.5 if self.car_speed < 0.20 * self.car_max_speed_ms else 0.0
+
+        # Competitive Rewards:
         # Missile is rewarded for decreasing 3D distance and hitting the car;
-        # Car is rewarded for increasing separation from the missile's predicted impact point and surviving!
+        # Car is rewarded for exploring new area, maintaining forward Ackermann speed, and increasing distance from the missile's predicted impact point!
         missile_reward = 5.0 * dist_dec
-        car_reward = -2.0 * dist_dec + 0.05 * (cur_dist_2d / 100.0)
+        car_reward = (
+            -2.0 * dist_dec
+            + new_area_bonus
+            + forward_speed_bonus
+            + 0.15 * (dist_to_pred_imp / 50.0)
+            + stagnation_penalty
+        )
 
         hit_ground = bool(-self.pos_ned[2] <= 0.0)
         hit_car = bool(hit_ground and cur_dist_2d <= self.car_cfg.hit_radius_m)
@@ -524,6 +576,8 @@ class PursuitEvasionAdversarialEnv(gym.Env):
             "car_speed_kmh": round(float(self.car_speed * 3.6), 1),
             "car_max_speed_kmh": round(self.car_max_speed_kmh, 1),
             "car_steer_deg": round(float(np.rad2deg(self.car_steer)), 2),
+            "car_visited_cells": int(len(self.visited_cells)),
+            "car_spawn_displacement_m": round(float(self.max_spawn_displacement_m), 2),
             "target_error_m": round(target_err, 2),
             "min_dist_3d_m": round(float(target_err if alt_m <= 0.1 else self.min_dist_3d), 2),
             "hit": bool(hit_car or (alt_m <= 0.1 and target_err <= self.car_cfg.hit_radius_m)),
