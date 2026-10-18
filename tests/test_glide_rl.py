@@ -4,6 +4,8 @@ import torch
 from rl.ppo_agent import ActorCritic
 from sim.glide_gps_env import GlideGpsTargetEnv
 from sim.glide_rl_env import GlidePulloutEnv
+from sim.pursuit_evasion_env import PursuitEvasionAdversarialEnv
+from train_pursuit_evasion_loop import evaluate_10_duel_trials
 
 
 def test_glide_rl_env_spaces_and_step():
@@ -71,3 +73,18 @@ def test_3d_balls_and_ground_and_linear_and_curved_targets():
         assert info["target_error_m"] < max_allowed_err
         if mode == "balls_3d":
             assert info["mean_ball_min_dist_m"] < 55.0
+
+
+def test_adversarial_pursuit_evasion_car_vs_missile_50_to_300_kmh():
+    m_ckpt = Path("checkpoints/glide_rl/gps_4_car_pursuit.pt")
+    c_ckpt = Path("checkpoints/glide_rl/car_evader_best.pt")
+    assert m_ckpt.exists() and c_ckpt.exists()
+
+    missile_model = ActorCritic(obs_dim=14, act_dim=2, hidden_dim=64)
+    car_model = ActorCritic(obs_dim=16, act_dim=2, hidden_dim=64)
+    missile_model.load_state_dict(torch.load(m_ckpt, map_location="cpu", weights_only=False)["model_state_dict"])
+    car_model.load_state_dict(torch.load(c_ckpt, map_location="cpu", weights_only=False)["model_state_dict"])
+
+    for spd_kmh in [50.0, 110.0, 210.0, 300.0]:
+        res = evaluate_10_duel_trials(missile_model, car_model, speed_kmh=spd_kmh, num_trials=10, seed=5000)
+        assert res["hits"] >= 9
