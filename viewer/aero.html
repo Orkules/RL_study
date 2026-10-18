@@ -315,15 +315,17 @@
     </div>
 
     <aside class="sidebar">
-      <!-- Compact Simulation Controls (Play/Pause, Restart, Save Data, and Single Drop Height Input) -->
+      <!-- Tape-Style Transport Controls (Cue, Play, Pause, Restart, Save Data) + Drop Height -->
       <div class="box">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
-          <div style="display:flex;gap:5px;">
-            <button id="btn-pause" class="primary" style="padding:5px 10px;font-size:11.5px;">Pause</button>
-            <button id="btn-reset" style="padding:5px 10px;font-size:11.5px;">Restart</button>
-            <button id="btn-save-flight" style="padding:5px 10px;font-size:11.5px;border-color:#22c55e;background:rgba(34,197,94,0.18);color:#bbf7d0;font-weight:700;">Save Data</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:4px;">
+          <div style="display:flex;gap:4px;flex-wrap:wrap;">
+            <button id="btn-cue" class="active" style="padding:5px 9px;font-size:11.5px;" title="Cue / Ready at t=0 (Stopped)">Cue</button>
+            <button id="btn-play" class="primary" style="padding:5px 9px;font-size:11.5px;" title="Start / Play Simulation">Play</button>
+            <button id="btn-pause" style="padding:5px 9px;font-size:11.5px;" title="Pause Simulation">Pause</button>
+            <button id="btn-reset" style="padding:5px 9px;font-size:11.5px;" title="Restart from t=0 with Same Parameters">Restart</button>
+            <button id="btn-save-flight" style="padding:5px 9px;font-size:11.5px;border-color:#22c55e;background:rgba(34,197,94,0.18);color:#bbf7d0;font-weight:700;">Save Data</button>
           </div>
-          <span id="conn-badge" style="color:#4ade80;font-size:10px;">100 Hz</span>
+          <span id="conn-badge" style="color:#facc15;font-size:10px;white-space:nowrap;">Cued (t=0)</span>
         </div>
         <div id="save-flight-status" style="margin-top:5px;font-size:11px;color:#86efac;display:none;"></div>
 
@@ -350,19 +352,36 @@
       </div>
 
       <div class="box" id="box-drop-controls">
-        <h2>Control Mode &amp; AI Model</h2>
-        <div style="display:grid;grid-template-columns:auto auto 1fr;gap:6px;align-items:center;">
-          <button id="btn-ctrl-manual" style="padding:6px 12px;">Manual</button>
-          <button id="btn-ctrl-auto" class="active" style="padding:6px 12px;">Auto (AI)</button>
-          <select id="sel-rl-model" style="width:100%;background:#091326;color:#f8fafc;border:1px solid #38bdf8;border-radius:6px;padding:6px 8px;font-size:12px;font-weight:600;cursor:pointer;">
-            <option value="gps_1_static" selected>GPS 1: Target Homing (&lt;3m)</option>
-            <option value="gps_2_linear">GPS 2: Linear Crossing Target</option>
-            <option value="gps_3_aggressive">GPS 3: Curved Moving Target</option>
-            <option value="gps_4_car_pursuit">Adversarial Car Duel (50-300 km/h)</option>
-            <option value="stage_4_master">Max Distance Glide (1325m)</option>
-            <option value="stage_2_mid">Mid Training Glide (1125m)</option>
-            <option value="stage_0_untrained">Untrained Vertical Drop (6.9m)</option>
-          </select>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <h2 style="margin:0;">Control Mode</h2>
+          <div style="display:flex;gap:6px;">
+            <button id="btn-ctrl-manual" style="padding:4px 12px;font-size:11.5px;">Manual</button>
+            <button id="btn-ctrl-auto" class="active" style="padding:4px 12px;font-size:11.5px;">Auto</button>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;align-items:center;">
+          <div>
+            <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;margin-bottom:3px;">1. Model</div>
+            <select id="sel-rl-model" style="width:100%;background:#091326;color:#f8fafc;border:1px solid #38bdf8;border-radius:6px;padding:6px 6px;font-size:11.5px;font-weight:600;cursor:pointer;">
+              <option value="gps_1_static" selected>v2.0 Homing (&lt;3m)</option>
+              <option value="gps_4_car_pursuit">v2.0 Pursuit ZEM</option>
+              <option value="gps_2_linear">v1.5 Linear Model</option>
+              <option value="gps_3_aggressive">v1.5 Curved Model</option>
+              <option value="stage_4_master">v1.0 Max Glide</option>
+              <option value="stage_2_mid">v0.5 Mid Glide</option>
+              <option value="stage_0_untrained">v0.0 Untrained</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px;color:#94a3b8;text-transform:uppercase;margin-bottom:3px;">2. Simulation Mode</div>
+            <select id="sel-sim-mode" style="width:100%;background:#091326;color:#f8fafc;border:1px solid #22c55e;border-radius:6px;padding:6px 6px;font-size:11.5px;font-weight:600;cursor:pointer;">
+              <option value="static" selected>Static Target</option>
+              <option value="linear">Linear Crossing</option>
+              <option value="curved">Curved Moving</option>
+              <option value="car_evasion">Evasive Car Duel</option>
+            </select>
+          </div>
         </div>
 
         <div id="car-speed-tier-row" class="btn-row" style="margin-top:6px;display:none;">
@@ -550,10 +569,10 @@
     });
     scene.add(tunnelGroup);
 
-    // Free-Drop 3D World Ground (6 km diameter = 6,000 m x 6,000 m for 1 km drop @ 3:1 glide ratio)
+    // Free-Drop 3D World Ground (4 km x 4 km = 4,000 m x 4,000 m)
     const WORLD_SCALE = 25.0; // 1 meter in free-drop = 25 scene units
-    const GROUND_DIAMETER_M = 6000.0; // 6 km diameter (±3 km radius from drop origin)
-    const GROUND_SIZE_UNITS = GROUND_DIAMETER_M * WORLD_SCALE; // 150,000 scene units
+    const GROUND_DIAMETER_M = 4000.0; // 4,000 m x 4,000 m (±2,000 m from drop origin)
+    const GROUND_SIZE_UNITS = GROUND_DIAMETER_M * WORLD_SCALE; // 100,000 scene units
     const dropWorldGroup = new THREE.Group();
     dropWorldGroup.visible = false;
 
@@ -579,8 +598,8 @@
     const groundTex = new THREE.CanvasTexture(groundTexCanvas);
     groundTex.wrapS = THREE.RepeatWrapping;
     groundTex.wrapT = THREE.RepeatWrapping;
-    // 6,000 m / 100 m per tile = 60 x 60 tiles across the 6 km ground
-    groundTex.repeat.set(60, 60);
+    // 4,000 m / 100 m per tile = 40 x 40 tiles across the 4 km ground
+    groundTex.repeat.set(40, 40);
     groundTex.anisotropy = 8;
 
     const groundPlane = new THREE.Mesh(
@@ -600,13 +619,13 @@
     originTarget.position.y = 1.0;
     dropWorldGroup.add(originTarget);
 
-    // Distance rings baked onto the 6 km ground (100 m, 300 m, 500 m, 1000 m, 2000 m, 3000 m from release point)
-    [100, 300, 500, 1000, 2000, 3000].forEach((distM) => {
+    // Distance rings baked onto the 4 km ground (200 m, 500 m, 1000 m, 1500 m, 2000 m from release point)
+    [200, 500, 1000, 1500, 2000].forEach((distM) => {
       const halfW = distM >= 1000 ? 2.5 : 1.4;
       const rRing = new THREE.Mesh(
         new THREE.RingGeometry((distM - halfW) * WORLD_SCALE, (distM + halfW) * WORLD_SCALE, 96),
         new THREE.MeshBasicMaterial({
-          color: distM === 500 || distM === 1000 || distM === 3000 ? 0xdc2626 : 0xe2e8f0,
+          color: distM === 500 || distM === 1000 || distM === 2000 ? 0xdc2626 : 0xe2e8f0,
           side: THREE.DoubleSide
         })
       );
@@ -1002,86 +1021,49 @@
       const btnMan = document.getElementById("btn-ctrl-manual");
       const btnAut = document.getElementById("btn-ctrl-auto");
       const selMod = document.getElementById("sel-rl-model");
-      if (!activeRlStage.startsWith("gps_")) {
-        activeRlStage = "gps_1_static";
-        if (selMod) selMod.value = "gps_1_static";
+      const selSim = document.getElementById("sel-sim-mode");
+      if (activeRlStage === "manual") {
+        activeRlStage = selMod ? selMod.value : "gps_1_static";
       }
       if (btnMan) btnMan.classList.remove("active");
       if (btnAut) btnAut.classList.add("active");
+      if (selMod) { selMod.disabled = false; selMod.style.opacity = "1.0"; }
+      if (selSim) { selSim.disabled = false; selSim.style.opacity = "1.0"; }
       gpsState.active = true;
       gpsTargetGroup.visible = simState.mode === "free_drop";
       gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
     }
 
-    function resetGpsTargetForStage(stageId) {
-      gpsState.stepCount = 0;
-      gpsState.schedule = [];
-      gpsState.ballsNed = [];
-      gpsState.posD = 0.0;
-      gpsState.turnRate = 0.0;
-      gpsState.turnFreq = 0.0;
-      skyBallsGroup.visible = false;
-      const boundaryR = Math.max(50.0, (simState.dropAltitudeInit || 1000.0) - 70.0);
+    function saveInitialTargetParams() {
+      gpsState.initPosN = gpsState.posN;
+      gpsState.initPosE = gpsState.posE;
+      gpsState.initVelN = gpsState.velN;
+      gpsState.initVelE = gpsState.velE;
+      gpsState.initHdgRad = gpsState.hdgRad;
+      gpsState.initSpeedMs = gpsState.speedMs;
+      gpsState.initTurnRate = gpsState.turnRate;
+      gpsState.initTurnFreq = gpsState.turnFreq;
+    }
 
-      if (stageId === "gps_1_static") {
-        gpsState.active = true;
-        gpsState.mode = "static";
-        const rSt = 80.0 + Math.random() * (boundaryR - 80.0);
-        const azSt = (Math.random() * 2.0 - 1.0) * Math.PI;
-        gpsState.posN = rSt * Math.cos(azSt);
-        gpsState.posE = rSt * Math.sin(azSt);
-        gpsState.velN = 0.0;
-        gpsState.velE = 0.0;
-      } else if (stageId === "gps_2_linear") {
-        gpsState.active = true;
-        gpsState.mode = "linear";
-        // Single-Intersection Tangent-Chord Crossing Car:
-        // Offset distance dPerp in [280, 560] m from center (0,0); car crosses perpendicular along the chord,
-        // timed so it passes the unique tangent meeting point P* at t* = 21.8 + 0.0085 * dPerp!
-        const dPerp = 280.0 + Math.random() * 280.0;
-        const thetaPerp = (Math.random() * 2.0 - 1.0) * Math.PI;
-        const pStarN = dPerp * Math.cos(thetaPerp);
-        const pStarE = dPerp * Math.sin(thetaPerp);
-        const tStar = 21.8 + 0.0085 * dPerp;
-        gpsState.speedMs = 12.0 + Math.random() * 12.0;
-        gpsState.hdgRad = thetaPerp + (Math.random() > 0.5 ? 1.0 : -1.0) * (Math.PI / 2.0);
-        gpsState.velN = gpsState.speedMs * Math.cos(gpsState.hdgRad);
-        gpsState.velE = gpsState.speedMs * Math.sin(gpsState.hdgRad);
-        gpsState.posN = pStarN - gpsState.velN * tStar;
-        gpsState.posE = pStarE - gpsState.velE * tStar;
-      } else if (stageId === "gps_3_aggressive") {
-        gpsState.active = true;
-        gpsState.mode = "curved";
-        const rCurv = 120.0 + Math.random() * Math.min(boundaryR * 0.65, 530.0);
-        const azCurv = (Math.random() * 2.0 - 1.0) * Math.PI;
-        gpsState.posN = rCurv * Math.cos(azCurv);
-        gpsState.posE = rCurv * Math.sin(azCurv);
-        gpsState.speedMs = 11.0 + Math.random() * 8.0;
-        gpsState.hdgRad = azCurv + 1.4;
-        gpsState.turnRate = 0.095;
-        gpsState.turnFreq = 0.16;
-        gpsState.velN = gpsState.speedMs * Math.cos(gpsState.hdgRad);
-        gpsState.velE = gpsState.speedMs * Math.sin(gpsState.hdgRad);
-      } else if (stageId === "gps_4_car_pursuit") {
-        gpsState.active = true;
-        gpsState.mode = "car_evasion";
-        const rCar0 = 80.0 + Math.random() * (boundaryR * 0.65 - 80.0);
-        const azCar0 = (Math.random() * 2.0 - 1.0) * Math.PI;
-        gpsState.posN = rCar0 * Math.cos(azCar0);
-        gpsState.posE = rCar0 * Math.sin(azCar0);
+    function restoreInitialTargetParams() {
+      if (typeof gpsState.initPosN === "number") {
+        gpsState.posN = gpsState.initPosN;
+        gpsState.posE = gpsState.initPosE;
+        gpsState.velN = gpsState.initVelN || 0.0;
+        gpsState.velE = gpsState.initVelE || 0.0;
+        gpsState.hdgRad = gpsState.initHdgRad || 0.0;
+        gpsState.speedMs = gpsState.initSpeedMs || 0.0;
+        gpsState.turnRate = gpsState.initTurnRate || 0.0;
+        gpsState.turnFreq = gpsState.initTurnFreq || 0.0;
         gpsState.carSpawnN = gpsState.posN;
         gpsState.carSpawnE = gpsState.posE;
-        gpsState.hdgRad = (Math.random() * 2.0 - 1.0) * Math.PI;
         gpsState.carSteerRad = 0.0;
-        gpsState.speedMs = 0.65 * (gpsState.carMaxSpeedKmh / 3.6);
-        gpsState.velN = gpsState.speedMs * Math.cos(gpsState.hdgRad);
-        gpsState.velE = gpsState.speedMs * Math.sin(gpsState.hdgRad);
-      } else {
-        gpsState.active = false;
       }
+      gpsState.stepCount = 0;
+      const isCar = gpsState.active && gpsState.mode === "car_evasion";
       const carRow = document.getElementById("car-speed-tier-row");
-      if (carRow) carRow.style.display = stageId === "gps_4_car_pursuit" ? "flex" : "none";
-      evaderCarGroup.visible = stageId === "gps_4_car_pursuit" && simState.mode === "free_drop";
+      if (carRow) carRow.style.display = isCar ? "flex" : "none";
+      evaderCarGroup.visible = isCar && simState.mode === "free_drop";
       if (evaderCarGroup.visible) {
         evaderCarGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
         evaderCarGroup.rotation.y = -gpsState.hdgRad;
@@ -1092,6 +1074,76 @@
         initGpsTargetHistory();
       }
       syncGpsUiFromState();
+    }
+
+    function resetGpsTargetForStage(stageId, keepExistingTarget = false) {
+      gpsState.stepCount = 0;
+      gpsState.schedule = [];
+      gpsState.ballsNed = [];
+      gpsState.posD = 0.0;
+      gpsState.turnRate = 0.0;
+      gpsState.turnFreq = 0.0;
+      skyBallsGroup.visible = false;
+      const boundaryR = Math.max(50.0, (simState.dropAltitudeInit || 1000.0) - 70.0);
+      const selSim = document.getElementById("sel-sim-mode");
+      const chosenSimMode = selSim ? selSim.value : "static";
+
+      if (stageId === "manual") {
+        gpsState.active = false;
+      } else {
+        gpsState.active = true;
+        gpsState.mode = chosenSimMode;
+        if (keepExistingTarget && typeof gpsState.initPosN === "number") {
+          restoreInitialTargetParams();
+          return;
+        }
+        if (chosenSimMode === "static") {
+          const rSt = 120.0 + Math.random() * Math.min(600.0, boundaryR - 120.0);
+          const azSt = (Math.random() * 2.0 - 1.0) * Math.PI;
+          gpsState.posN = rSt * Math.cos(azSt);
+          gpsState.posE = rSt * Math.sin(azSt);
+          gpsState.velN = 0.0;
+          gpsState.velE = 0.0;
+          gpsState.speedMs = 0.0;
+        } else if (chosenSimMode === "linear") {
+          const dPerp = 280.0 + Math.random() * 280.0;
+          const thetaPerp = (Math.random() * 2.0 - 1.0) * Math.PI;
+          const pStarN = dPerp * Math.cos(thetaPerp);
+          const pStarE = dPerp * Math.sin(thetaPerp);
+          const tStar = 21.8 + 0.0085 * dPerp;
+          gpsState.speedMs = 12.0 + Math.random() * 12.0;
+          gpsState.hdgRad = thetaPerp + (Math.random() > 0.5 ? 1.0 : -1.0) * (Math.PI / 2.0);
+          gpsState.velN = gpsState.speedMs * Math.cos(gpsState.hdgRad);
+          gpsState.velE = gpsState.speedMs * Math.sin(gpsState.hdgRad);
+          gpsState.posN = pStarN - gpsState.velN * tStar;
+          gpsState.posE = pStarE - gpsState.velE * tStar;
+        } else if (chosenSimMode === "curved") {
+          const rCurv = 120.0 + Math.random() * Math.min(boundaryR * 0.65, 530.0);
+          const azCurv = (Math.random() * 2.0 - 1.0) * Math.PI;
+          gpsState.posN = rCurv * Math.cos(azCurv);
+          gpsState.posE = rCurv * Math.sin(azCurv);
+          gpsState.speedMs = 11.0 + Math.random() * 8.0;
+          gpsState.hdgRad = azCurv + 1.4;
+          gpsState.turnRate = 0.095;
+          gpsState.turnFreq = 0.16;
+          gpsState.velN = gpsState.speedMs * Math.cos(gpsState.hdgRad);
+          gpsState.velE = gpsState.speedMs * Math.sin(gpsState.hdgRad);
+        } else if (chosenSimMode === "car_evasion") {
+          const rCar0 = 120.0 + Math.random() * Math.min(450.0, boundaryR * 0.65 - 120.0);
+          const azCar0 = (Math.random() * 2.0 - 1.0) * Math.PI;
+          gpsState.posN = rCar0 * Math.cos(azCar0);
+          gpsState.posE = rCar0 * Math.sin(azCar0);
+          gpsState.carSpawnN = gpsState.posN;
+          gpsState.carSpawnE = gpsState.posE;
+          gpsState.hdgRad = (Math.random() * 2.0 - 1.0) * Math.PI;
+          gpsState.carSteerRad = 0.0;
+          gpsState.speedMs = 0.65 * (gpsState.carMaxSpeedKmh / 3.6);
+          gpsState.velN = gpsState.speedMs * Math.cos(gpsState.hdgRad);
+          gpsState.velE = gpsState.speedMs * Math.sin(gpsState.hdgRad);
+        }
+        saveInitialTargetParams();
+      }
+      restoreInitialTargetParams();
     }
 
     function evalRawMlp(m, obsVec) {
@@ -1671,16 +1723,31 @@
     const slServoR   = document.getElementById("sl-servo-r");
     const slServoL   = document.getElementById("sl-servo-l");
 
-    function setMode(newMode, dropAlt = null) {
+    const btnCue   = document.getElementById("btn-cue");
+    const btnPlay  = document.getElementById("btn-play");
+    const btnPause = document.getElementById("btn-pause");
+    const btnReset = document.getElementById("btn-reset");
+    const connBadge = document.getElementById("conn-badge");
+    let cameraInitialized = false;
+
+    function updateTransportUi(state) {
+      if (btnCue)   btnCue.classList.toggle("active", state === "cue");
+      if (btnPlay)  btnPlay.classList.toggle("active", state === "play");
+      if (btnPause) btnPause.classList.toggle("active", state === "pause");
+      if (connBadge) {
+        if (state === "cue")   { connBadge.textContent = "Cued (t=0)"; connBadge.style.color = "#facc15"; }
+        if (state === "play")  { connBadge.textContent = "Running";    connBadge.style.color = "#4ade80"; }
+        if (state === "pause") { connBadge.textContent = "Paused";     connBadge.style.color = "#fb923c"; }
+      }
+    }
+
+    function setMode(newMode, dropAlt = null, startPaused = true, keepTarget = false) {
       simState.mode = newMode;
       const isTunnel = newMode === "wind_tunnel";
       document.getElementById("btn-mode-tunnel").classList.toggle("active", isTunnel);
       document.getElementById("btn-mode-drop").classList.toggle("active", !isTunnel);
       document.getElementById("box-tunnel-controls").style.display = isTunnel ? "block" : "none";
       document.getElementById("box-drop-controls").style.display   = isTunnel ? "none" : "block";
-      document.getElementById("hud-mode-title").textContent = isTunnel
-        ? "MODE 1: 3D WIND-TUNNEL (COM FIXED AT 91.3 MM, 3-DOF ROTATION)"
-        : "MODE 2: 3D WORLD FREE-DROP GLIDE (6-DOF FLIGHT DYNAMICS)";
 
       tunnelGroup.visible = isTunnel;
       streamGroup.visible = isTunnel;
@@ -1689,16 +1756,13 @@
       trailMarkersGroup.visible = !isTunnel;
       document.getElementById("traj-map-box").style.display = isTunnel ? "none" : "block";
 
-      // Switch between Dark Wind-Tunnel Enclosure and Crisp Sky Blue + Subtle Distance Fog!
       scene.background = new THREE.Color(isTunnel ? 0x05080f : 0x7dd3fc);
       scene.fog = new THREE.FogExp2(isTunnel ? 0x05080f : 0x7dd3fc, isTunnel ? 0.00012 : 0.0000055);
 
       if (dropAlt !== null) simState.dropAltitudeInit = dropAlt;
-      simState.paused = false;
-      btnPause.textContent = "Pause";
-      btnPause.classList.remove("active");
+      simState.paused = startPaused;
+      updateTransportUi(startPaused ? "cue" : "play");
 
-      // Completely wipe previous trajectory trail buffer and spheres
       simState.trail = [];
       simState.recordedSteps = [];
       trailPositions.fill(0);
@@ -1716,9 +1780,8 @@
         vehicleGroup.position.set(0, 0, 0);
         setCamPreset("follow");
       } else {
-        // Free-Drop starts held upside-down in the air with the nose pointing straight down (-90 deg pitch) and 0 speed
         simState.roll = 0.0;
-        simState.pitch = -90.0 * Math.PI / 180.0;
+        simState.pitch = (activeRlStage === "manual" ? -85.0 : -89.5) * Math.PI / 180.0;
         simState.yaw = 0.0;
         simState.R_wb = eulerToR(simState.roll, simState.pitch, simState.yaw);
         simState.p = simState.q = simState.r = 0.0;
@@ -1731,21 +1794,16 @@
         const startY = simState.altM * WORLD_SCALE;
         simState.trail = [[0, startY, 0]];
         vehicleGroup.position.set(0, startY, 0);
-        // Show vertical reference line up to the current release altitude
         for (const m of verticalDropPillars.children) {
           m.visible = m.position.y <= startY;
         }
         rlPrevAction = [0.0, 0.0];
         rlSubstepCounter = 0;
-        resetGpsTargetForStage(activeRlStage);
-        if (activeRlStage === "manual") {
-          simState.pitch = -85.0 * Math.PI / 180.0;
-        } else {
-          simState.pitch = -89.5 * Math.PI / 180.0;
+        resetGpsTargetForStage(activeRlStage, keepTarget);
+        if (!cameraInitialized) {
+          setCamPreset("overview");
+          cameraInitialized = true;
         }
-        simState.R_wb = eulerToR(simState.roll, simState.pitch, simState.yaw);
-        // Default first look in Free-Drop mode = Full Trajectory View (zoomed out from release height down to ground!)
-        setCamPreset("overview");
       }
       sendWs({ type: "set_mode", mode: newMode, altitude_m: simState.dropAltitudeInit, airspeed_ms: simState.tunnelAirspeed });
     }
@@ -1753,24 +1811,35 @@
     document.getElementById("btn-mode-tunnel").onclick = () => setMode("wind_tunnel");
     document.getElementById("btn-mode-drop").onclick   = () => setMode("free_drop");
 
-    document.getElementById("btn-kick").onclick = () => {
-      simState.roll  = 0.0;
-      simState.pitch = 25.0 * Math.PI / 180.0;
-      simState.yaw   = -18.0 * Math.PI / 180.0;
-      simState.R_wb  = eulerToR(simState.roll, simState.pitch, simState.yaw);
-      simState.p = 0.0; simState.q = 0.0; simState.r = 0.0;
-      sendWs({ type: "kick_attitude", angles_deg: [0.0, 25.0, -18.0], omega_rads: [0, 0, 0] });
-    };
+    document.getElementById("btn-kick").onclick = () => {};
 
-    document.getElementById("btn-reset").onclick = () => setMode(simState.mode);
-
-    const btnPause = document.getElementById("btn-pause");
-    btnPause.onclick = () => {
-      simState.paused = !simState.paused;
-      btnPause.textContent = simState.paused ? "Resume" : "Pause";
-      btnPause.classList.toggle("active", simState.paused);
-      sendWs({ type: "set_paused", paused: simState.paused });
-    };
+    // Tape-Style Transport Controls: Cue (Stop/Ready at t=0), Play, Pause, Restart (Re-run with same parameters)
+    if (btnCue) {
+      btnCue.onclick = () => {
+        setMode("free_drop", simState.dropAltitudeInit, true, true);
+      };
+    }
+    if (btnPlay) {
+      btnPlay.onclick = () => {
+        if (simState.altM <= 0.0) {
+          setMode("free_drop", simState.dropAltitudeInit, false, true);
+        } else {
+          simState.paused = false;
+          updateTransportUi("play");
+        }
+      };
+    }
+    if (btnPause) {
+      btnPause.onclick = () => {
+        simState.paused = true;
+        updateTransportUi("pause");
+      };
+    }
+    if (btnReset) {
+      btnReset.onclick = () => {
+        setMode("free_drop", simState.dropAltitudeInit, false, true);
+      };
+    }
 
     document.getElementById("btn-save-flight").onclick = async () => {
       const steps = simState.recordedSteps || [];
@@ -1838,7 +1907,7 @@
       if (inDropAlt) inDropAlt.value = simState.dropAltitudeInit;
       document.getElementById("val-drop-alt").textContent = `${simState.dropAltitudeInit.toFixed(0)} m`;
       if (simState.mode === "free_drop") {
-        setMode("free_drop", simState.dropAltitudeInit);
+        setMode("free_drop", simState.dropAltitudeInit, true, true);
       }
     };
     if (inDropAlt) {
@@ -1848,33 +1917,32 @@
         slDropAlt.value = Math.min(2000, v);
         simState.dropAltitudeInit = v;
         document.getElementById("val-drop-alt").textContent = `${v.toFixed(0)} m`;
-        setMode("free_drop", v);
+        setMode("free_drop", v, true, true);
       };
     }
-    document.getElementById("btn-drop-200").onclick = () => {
-      slDropAlt.value = 200; slDropAlt.oninput(); setMode("free_drop", 200);
-    };
-    document.getElementById("btn-drop-500").onclick = () => {
-      slDropAlt.value = 500; slDropAlt.oninput(); setMode("free_drop", 500);
-    };
     const btnCtrlManual = document.getElementById("btn-ctrl-manual");
     const btnCtrlAuto   = document.getElementById("btn-ctrl-auto");
     const selRlModel    = document.getElementById("sel-rl-model");
+    const selSimMode    = document.getElementById("sel-sim-mode");
 
     if (btnCtrlManual) {
       btnCtrlManual.onclick = () => {
         btnCtrlManual.classList.add("active");
         if (btnCtrlAuto) btnCtrlAuto.classList.remove("active");
+        if (selRlModel) { selRlModel.disabled = true; selRlModel.style.opacity = "0.4"; }
+        if (selSimMode) { selSimMode.disabled = true; selSimMode.style.opacity = "0.4"; }
         activeRlStage = "manual";
-        setMode("free_drop", simState.dropAltitudeInit);
+        setMode("free_drop", simState.dropAltitudeInit, true, true);
       };
     }
     if (btnCtrlAuto) {
       btnCtrlAuto.onclick = () => {
         btnCtrlAuto.classList.add("active");
         if (btnCtrlManual) btnCtrlManual.classList.remove("active");
+        if (selRlModel) { selRlModel.disabled = false; selRlModel.style.opacity = "1.0"; }
+        if (selSimMode) { selSimMode.disabled = false; selSimMode.style.opacity = "1.0"; }
         activeRlStage = selRlModel ? selRlModel.value : "gps_1_static";
-        setMode("free_drop", simState.dropAltitudeInit);
+        setMode("free_drop", simState.dropAltitudeInit, true, true);
       };
     }
     if (selRlModel) {
@@ -1882,132 +1950,53 @@
         if (btnCtrlAuto) btnCtrlAuto.classList.add("active");
         if (btnCtrlManual) btnCtrlManual.classList.remove("active");
         activeRlStage = selRlModel.value;
-        setMode("free_drop", simState.dropAltitudeInit);
+        setMode("free_drop", simState.dropAltitudeInit, true, true);
       };
     }
-
-    document.getElementById("btn-drop-1000").onclick = () => {
-      slDropAlt.value = 1000; slDropAlt.oninput(); setMode("free_drop", 1000);
-    };
-
-    document.getElementById("btn-random-midair").onclick = () => {
-      activeRlStage = "gps_1_static";
-      document.querySelectorAll(".rl-btn").forEach((b) => {
-        b.classList.toggle("active", b.dataset.rl === activeRlStage);
-      });
-      setMode("free_drop", 1000);
-      // Launch mid-air at random 3D attitude (roll in [-180,+180], pitch in [-80,+15], yaw in [-180,+180]) and random speed (15..50 m/s)
-      const alt0 = 550.0 + Math.random() * 450.0;
-      const roll0 = (Math.random() * 360.0 - 180.0) * Math.PI / 180.0;
-      const pitch0 = (-80.0 + Math.random() * 92.0) * Math.PI / 180.0;
-      const yaw0 = (Math.random() * 360.0 - 180.0) * Math.PI / 180.0;
-      const spd0 = 15.0 + Math.random() * 35.0;
-      simState.altM = alt0;
-      simState.roll = roll0;
-      simState.pitch = pitch0;
-      simState.yaw = yaw0;
-      simState.R_wb = eulerToR(roll0, pitch0, yaw0);
-      simState.velN = simState.R_wb[0][0] * spd0;
-      simState.velE = simState.R_wb[1][0] * spd0;
-      simState.velD = simState.R_wb[2][0] * spd0;
-      simState.posN = 0.0;
-      simState.posE = 0.0;
-      simState.trail = [[0, alt0 * WORLD_SCALE, 0]];
-      simState.recordedSteps = [];
-      // Place target in a completely different direction at random reachable radius
-      const rT = 120.0 + Math.random() * (alt0 * 0.78);
-      const azT = (Math.random() * 2.0 - 1.0) * Math.PI;
-      gpsState.active = true;
-      gpsState.mode = "static";
-      gpsState.posN = rT * Math.cos(azT);
-      gpsState.posE = rT * Math.sin(azT);
-      gpsState.velN = 0.0;
-      gpsState.velE = 0.0;
-      gpsTargetGroup.visible = true;
-      gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
-      initGpsTargetHistory();
-      syncGpsUiFromState();
-      document.getElementById("rl-status-line").innerHTML =
-        `Mid-Air Launch: <strong>Alt=${alt0.toFixed(0)}m, Speed=${spd0.toFixed(1)}m/s, Pitch=${(pitch0*180/Math.PI).toFixed(0)}°, Roll=${(roll0*180/Math.PI).toFixed(0)}°</strong> -> Shortest-Path Homing (<3m Error)`;
-    };
+    if (selSimMode) {
+      selSimMode.onchange = () => {
+        if (btnCtrlAuto) btnCtrlAuto.classList.add("active");
+        if (btnCtrlManual) btnCtrlManual.classList.remove("active");
+        setMode("free_drop", simState.dropAltitudeInit, true, false);
+      };
+    }
 
     document.querySelectorAll(".car-spd-btn").forEach((btn) => {
       btn.onclick = () => {
         document.querySelectorAll(".car-spd-btn").forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         gpsState.carMaxSpeedKmh = Number(btn.dataset.kmh);
-        activeRlStage = "gps_4_car_pursuit";
-        if (selRlModel) selRlModel.value = "gps_4_car_pursuit";
+        if (selSimMode) selSimMode.value = "car_evasion";
         if (btnCtrlAuto) btnCtrlAuto.classList.add("active");
         if (btnCtrlManual) btnCtrlManual.classList.remove("active");
-        setMode("free_drop", simState.dropAltitudeInit);
+        setMode("free_drop", simState.dropAltitudeInit, true, false);
       };
     });
 
-    document.getElementById("btn-flip-mirror").onclick = () => {
-      if (simState.mode !== "free_drop") {
-        setMode("free_drop", 1000);
-      }
-      ensureGpsPolicyActive();
-      gpsState.mode = "static";
-      gpsState.schedule = [];
-      gpsState.velN = 0.0;
-      gpsState.velE = 0.0;
-      gpsState.posN = -gpsState.posN;
-      gpsState.posE = -gpsState.posE;
-      gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
-      initGpsTargetHistory();
-      syncGpsUiFromState();
-    };
-
-    // Interactive 360-Degree Centered X-Y Radar Pad (Origin (0, 0) in Center — Click/Drag Anywhere Around Center!)
+    // Interactive 360-Degree Centered X-Y Radar Pad (4,000 m x 4,000 m = ±2,000 m around Center (0, 0))
     const xyPadCanvas = document.getElementById("xy-target-pad");
     const xyPadCtx = xyPadCanvas.getContext("2d");
     let isDraggingXyPad = false;
-    const XY_PAD_MAX_R = 1350.0; // ±1,350 m in all 360° directions around center (0, 0)
+    const XY_PAD_MAX_R = 2000.0; // ±2,000 m in all 360° directions around center (0, 0) (4,000 m x 4,000 m)
 
     function setTargetFromXyPadEvent(ev) {
       const rect = xyPadCanvas.getBoundingClientRect();
       const px = (ev.clientX - rect.left) / rect.width;
       const py = (ev.clientY - rect.top) / rect.height;
-      // Center of pad (0.5, 0.5) is Origin (0, 0) directly below the 1,000 m drop point!
       const eastM  = Math.max(-XY_PAD_MAX_R, Math.min(XY_PAD_MAX_R, (px - 0.5) * 2.0 * XY_PAD_MAX_R));
       const northM = Math.max(-XY_PAD_MAX_R, Math.min(XY_PAD_MAX_R, (0.5 - py) * 2.0 * XY_PAD_MAX_R));
-      if (simState.mode !== "free_drop") {
-        setMode("free_drop", 1000);
-      }
       ensureGpsPolicyActive();
-      if (activeRlStage === "gps_4_car_pursuit") {
-        gpsState.mode = "car_evasion";
-        gpsState.posN = northM;
-        gpsState.posE = eastM;
-        gpsState.carSpawnN = northM;
-        gpsState.carSpawnE = eastM;
-        evaderCarGroup.visible = true;
-        evaderCarGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
-      } else {
-        gpsState.mode = "static";
-        gpsState.schedule = [];
+      gpsState.posN = northM;
+      gpsState.posE = eastM;
+      gpsState.carSpawnN = northM;
+      gpsState.carSpawnE = eastM;
+      if (gpsState.mode === "static") {
         gpsState.velN = 0.0;
         gpsState.velE = 0.0;
-        gpsState.posN = northM;
-        gpsState.posE = eastM;
       }
-      initGpsTargetHistory();
-      // If the glider has already fallen too low (< 400 m) to reach a newly clicked far-away target, automatically re-launch from 1,000 m!
-      if (simState.altM < 400.0) {
-        simState.roll = 0.0;
-        simState.pitch = -89.5 * Math.PI / 180.0;
-        simState.yaw = 0.0;
-        simState.R_wb = eulerToR(simState.roll, simState.pitch, simState.yaw);
-        simState.p = simState.q = simState.r = 0.0;
-        simState.posN = 0.0;
-        simState.posE = 0.0;
-        simState.altM = 1000.0;
-        simState.velN = 0.0;
-        simState.velE = 0.0;
-        simState.velD = 0.1;
-        simState.trail = [[0, 1000.0 * WORLD_SCALE, 0]];
+      saveInitialTargetParams();
+      if (evaderCarGroup.visible) {
+        evaderCarGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
       }
       gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
       initGpsTargetHistory();
@@ -2036,12 +2025,12 @@
       const toPx = (eastM) => cx + (eastM / XY_PAD_MAX_R) * (W * 0.5);
       const toPy = (northM) => cy - (northM / XY_PAD_MAX_R) * (H * 0.5);
 
-      // Concentric 360-degree range rings around Center (0, 0): 300 m, 600 m, 900 m, 1200 m with clear labels
+      // Concentric 360-degree range rings around Center (0, 0): 500 m, 1000 m, 1500 m, 2000 m with clear labels
       xyPadCtx.strokeStyle = "#1e293b";
       xyPadCtx.lineWidth = 1;
       xyPadCtx.fillStyle = "#64748b";
       xyPadCtx.font = "9.5px monospace";
-      [300, 600, 900, 1200].forEach((rM) => {
+      [500, 1000, 1500, 2000].forEach((rM) => {
         const rPx = (rM / XY_PAD_MAX_R) * (W * 0.5);
         xyPadCtx.beginPath();
         xyPadCtx.arc(cx, cy, rPx, 0, Math.PI * 2);
@@ -2129,18 +2118,18 @@
       xyPadCtx.lineTo(hdgX, hdgY);
       xyPadCtx.stroke();
 
-      // 360° Compass & Ring Labels
+      // 360° Compass & Ring Labels (4,000 m x 4,000 m = ±2,000 m)
       xyPadCtx.fillStyle = "#94a3b8";
       xyPadCtx.font = "10px monospace";
-      xyPadCtx.fillText("N (+1350m)", cx + 5, 12);
-      xyPadCtx.fillText("S (-1350m)", cx + 5, H - 6);
-      xyPadCtx.fillText("W (-1350m)", 6, cy - 5);
-      xyPadCtx.fillText("E (+1350m)", W - 68, cy - 5);
+      xyPadCtx.fillText("N (+2000m)", cx + 5, 12);
+      xyPadCtx.fillText("S (-2000m)", cx + 5, H - 6);
+      xyPadCtx.fillText("W (-2000m)", 6, cy - 5);
+      xyPadCtx.fillText("E (+2000m)", W - 68, cy - 5);
       xyPadCtx.fillStyle = "#cbd5e1";
       xyPadCtx.fillText("(0,0)", cx + 6, cy + 12);
     }
 
-    // Double-Click (or Shift+Click) anywhere on the 6 km 3D green ground (360° around origin) to move the GPS target!
+    // Double-Click (or Shift+Click) anywhere on the 4 km 3D green ground (360° around origin) to move the GPS target!
     const raycasterGps = new THREE.Raycaster();
     const mouseNdc = new THREE.Vector2();
     function handle3DGroundTargetPick(ev) {
@@ -2153,12 +2142,18 @@
       if (hits.length > 0) {
         const pt = hits[0].point;
         ensureGpsPolicyActive();
-        gpsState.mode = "static";
-        gpsState.schedule = [];
-        gpsState.velN = 0.0;
-        gpsState.velE = 0.0;
-        gpsState.posN = Math.max(-2500.0, Math.min(2500.0, pt.x / WORLD_SCALE));
-        gpsState.posE = Math.max(-2500.0, Math.min(2500.0, pt.z / WORLD_SCALE));
+        gpsState.posN = Math.max(-2000.0, Math.min(2000.0, pt.x / WORLD_SCALE));
+        gpsState.posE = Math.max(-2000.0, Math.min(2000.0, pt.z / WORLD_SCALE));
+        gpsState.carSpawnN = gpsState.posN;
+        gpsState.carSpawnE = gpsState.posE;
+        if (gpsState.mode === "static") {
+          gpsState.velN = 0.0;
+          gpsState.velE = 0.0;
+        }
+        saveInitialTargetParams();
+        if (evaderCarGroup.visible) {
+          evaderCarGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
+        }
         gpsTargetGroup.position.set(gpsState.posN * WORLD_SCALE, 0, gpsState.posE * WORLD_SCALE);
         initGpsTargetHistory();
         syncGpsUiFromState();
@@ -2582,12 +2577,9 @@
         axesCtx.fillText(a.label, lx, ly);
       }
     }
-    // Start directly in Free-Drop Glide Simulation (not Wind-Tunnel mode)
+    // Start directly in Free-Drop Glide Simulation in Cued (Ready/Stopped at t=0) state
     activeRlStage = "gps_1_static";
-    document.querySelectorAll(".rl-btn").forEach((b) => {
-      b.classList.toggle("active", b.dataset.rl === activeRlStage);
-    });
-    setMode("free_drop", 1000);
+    setMode("free_drop", 1000, true, false);
     animate();
   </script>
 </body>
