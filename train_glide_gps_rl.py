@@ -14,7 +14,7 @@ from sim.glide_gps_env import GlideGpsTargetEnv
 
 
 def guidance_teacher_action(obs: np.ndarray, lead_gain: float = 0.65) -> np.ndarray:
-    """Proportional-navigation warm-start teacher for 14D GPS coordinate interception."""
+    """360-degree omnidirectional proportional-navigation teacher for 14D GPS coordinate interception."""
     pitch_n = float(obs[0])
     sin_roll = float(obs[1])
     p_norm = float(obs[3])
@@ -32,13 +32,22 @@ def guidance_teacher_action(obs: np.ndarray, lead_gain: float = 0.65) -> np.ndar
     pred_y = rel_y + (tv_y * 25.0 * lead_gain * t_go) / 1000.0
 
     horiz_dist = float(np.hypot(pred_x, pred_y))
-    req_glide_ratio = horiz_dist / max(0.04, alt_n)
-    pitch_cmd = float(np.clip(0.05 + 0.42 * (req_glide_ratio - 0.35), 0.05, 0.72))
+    bearing = float(np.arctan2(pred_y, pred_x))
 
-    pullout_gate = float(np.clip((pitch_n + 0.82) * 3.2, 0.0, 1.0))
-    bearing = float(np.arctan2(pred_y, max(0.04, pred_x)))
-    desired_roll = float(np.clip(1.95 * bearing, -0.85, 0.85)) * pullout_gate
-    roll_cmd = float(np.clip(1.35 * (desired_roll - sin_roll) - 0.28 * p_norm - 0.12 * r_norm, -1.0, 1.0))
+    # In the initial vertical dive, spin around the vertical axis to face ANY 360-deg azimuth before pulling out!
+    if pitch_n < -0.82 and abs(bearing) > 0.20:
+        pitch_cmd = 0.02
+        roll_cmd = float(np.clip(0.85 * bearing - 0.25 * p_norm, -0.7, 0.7))
+        return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
+
+    req_glide_ratio = horiz_dist / max(0.04, alt_n)
+    pitch_cmd = float(np.clip(0.03 + 0.42 * (req_glide_ratio - 0.35), 0.02, 0.72))
+    if abs(bearing) > 0.7:
+        pitch_cmd = max(pitch_cmd, 0.48)
+
+    pullout_gate = float(np.clip((pitch_n + 0.85) * 3.5, 0.0, 1.0))
+    desired_roll = float(np.clip(1.65 * bearing, -0.82, 0.82)) * pullout_gate
+    roll_cmd = float(np.clip(1.30 * (desired_roll - sin_roll) - 0.28 * p_norm - 0.12 * r_norm, -1.0, 1.0))
     return np.array([pitch_cmd, roll_cmd], dtype=np.float32)
 
 
@@ -46,8 +55,8 @@ def pretrain_actor_for_gps_stage(
     model: ActorCritic,
     target_mode: str,
     lead_gain: float,
-    num_episodes: int = 35,
-    epochs: int = 25,
+    num_episodes: int = 50,
+    epochs: int = 30,
     seed: int = 42,
 ) -> None:
     """Warm-start the 14D ActorCritic on trajectories in the target environment before PPO fine-tuning."""
@@ -175,8 +184,8 @@ def run_curriculum_stage(
         model=model,
         target_mode=target_mode,
         lead_gain=lead_gain,
-        num_episodes=35,
-        epochs=25,
+        num_episodes=50,
+        epochs=30,
         seed=seed,
     )
 

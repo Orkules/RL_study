@@ -48,9 +48,9 @@ def test_trained_glide_rl_policy_reaches_over_1300m_unshaped():
 
 def test_gps_target_curriculum_stages_static_linear_aggressive():
     stages = [
-        ("gps_1_static", "static", 25.0),
-        ("gps_2_linear", "linear", 30.0),
-        ("gps_3_aggressive", "aggressive", 190.0),
+        ("gps_1_static", "static", 45.0),
+        ("gps_2_linear", "linear", 45.0),
+        ("gps_3_aggressive", "aggressive", 210.0),
     ]
     for stage_id, mode, max_allowed_err in stages:
         ckpt_path = Path(f"checkpoints/glide_rl/{stage_id}.pt")

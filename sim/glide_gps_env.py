@@ -179,33 +179,36 @@ class GlideGpsTargetEnv(gym.Env):
                     (615, 760.0,  -40.0, 0.0,   0.0),
                 ]
         else:
-            r_init = float(self.np_random.uniform(750.0, 1150.0))
-            az_init = float(self.np_random.uniform(-np.deg2rad(42.0), np.deg2rad(42.0)))
+            # Full 360-degree omnidirectional GPS target around the center (0, 0)!
+            r_init = float(self.np_random.uniform(120.0, 1150.0))
+            az_init = float(self.np_random.uniform(-np.pi, np.pi))
             self.target_ne = np.array([r_init * np.cos(az_init), r_init * np.sin(az_init)], dtype=np.float64)
 
             if self.target_mode == "static":
                 self.target_vel_ne = np.zeros(2, dtype=np.float64)
             elif self.target_mode == "linear":
-                spd = float(self.np_random.uniform(5.0, 11.0))
+                spd = float(self.np_random.uniform(5.0, 12.0))
                 hdg = float(self.np_random.uniform(-np.pi, np.pi))
                 self.target_vel_ne = np.array([spd * np.cos(hdg), spd * np.sin(hdg)], dtype=np.float64)
-            else:  # "aggressive" — Random 7 side-to-side jumps throughout the flight!
+            else:  # "aggressive" — Random 7 side-to-side jumps throughout the flight across 360 deg!
+                base_az = float(self.np_random.uniform(-np.pi, np.pi))
+                fwd_vec = np.array([np.cos(base_az), np.sin(base_az)], dtype=np.float64)
+                lat_vec = np.array([-np.sin(base_az), np.cos(base_az)], dtype=np.float64)
                 side = float(self.np_random.choice([-1.0, 1.0]))
-                self.target_ne = np.array(
-                    [float(self.np_random.uniform(250.0, 320.0)), side * float(self.np_random.uniform(180.0, 260.0))],
-                    dtype=np.float64,
-                )
-                self.target_vel_ne = np.array([4.0, side * float(self.np_random.uniform(12.0, 18.0))], dtype=np.float64)
+                cur_fwd = float(self.np_random.uniform(220.0, 320.0))
+                init_lat = side * float(self.np_random.uniform(180.0, 260.0))
+                self.target_ne = cur_fwd * fwd_vec + init_lat * lat_vec
+                self.target_vel_ne = 4.0 * fwd_vec + (side * float(self.np_random.uniform(12.0, 18.0))) * lat_vec
                 cur_step = int(self.np_random.integers(75, 95))
-                cur_n = float(self.target_ne[0])
                 for k in range(7):
                     side *= -1.0
-                    cur_n += float(self.np_random.uniform(65.0, 85.0))
+                    cur_fwd += float(self.np_random.uniform(65.0, 85.0))
                     lat_amp = float(self.np_random.uniform(180.0, 280.0)) * max(0.20, 1.0 - 0.12 * k)
-                    new_e = side * lat_amp
-                    vy = side * float(self.np_random.uniform(8.0, 16.0)) * max(0.0, 1.0 - 0.16 * k)
-                    vx = float(self.np_random.uniform(1.0, 4.0)) * max(0.0, 1.0 - 0.15 * k)
-                    self.aggressive_schedule.append((cur_step, cur_n, new_e, vx, vy))
+                    pt_ne = cur_fwd * fwd_vec + (side * lat_amp) * lat_vec
+                    v_lat = side * float(self.np_random.uniform(8.0, 16.0)) * max(0.0, 1.0 - 0.16 * k)
+                    v_fwd = float(self.np_random.uniform(1.0, 4.0)) * max(0.0, 1.0 - 0.15 * k)
+                    v_ne = v_fwd * fwd_vec + v_lat * lat_vec
+                    self.aggressive_schedule.append((cur_step, float(pt_ne[0]), float(pt_ne[1]), float(v_ne[0]), float(v_ne[1])))
                     cur_step += int(self.np_random.integers(80, 95))
 
         self.prev_dist_to_target = float(
@@ -333,12 +336,12 @@ class GlideGpsTargetEnv(gym.Env):
 
         if self.target_mode in ("linear", "aggressive"):
             self.target_ne += self.target_vel_ne * self.control_dt
-            if self.target_ne[0] < 250.0 or self.target_ne[0] > 1250.0:
+            if self.target_ne[0] < -1250.0 or self.target_ne[0] > 1250.0:
                 self.target_vel_ne[0] *= -1.0
-                self.target_ne[0] = np.clip(self.target_ne[0], 250.0, 1250.0)
-            if self.target_ne[1] < -650.0 or self.target_ne[1] > 650.0:
+                self.target_ne[0] = np.clip(self.target_ne[0], -1250.0, 1250.0)
+            if self.target_ne[1] < -1250.0 or self.target_ne[1] > 1250.0:
                 self.target_vel_ne[1] *= -1.0
-                self.target_ne[1] = np.clip(self.target_ne[1], -650.0, 650.0)
+                self.target_ne[1] = np.clip(self.target_ne[1], -1250.0, 1250.0)
 
         pitch_flap_deg = float(act[0]) * self.max_wing_flap_deg
         roll_flap_deg = float(act[1]) * 20.0
