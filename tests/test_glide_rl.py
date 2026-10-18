@@ -58,12 +58,13 @@ def test_3d_balls_and_ground_and_linear_and_curved_targets():
         ckpt_path = Path(f"checkpoints/glide_rl/{stage_id}.pt")
         assert ckpt_path.exists()
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        model = ActorCritic(obs_dim=14, act_dim=2, hidden_dim=64)
+        model = ActorCritic(obs_dim=22, act_dim=2, hidden_dim=64)
         model.load_state_dict(ckpt["model_state_dict"])
         model.eval()
 
         env = GlideGpsTargetEnv(target_mode=mode, release_altitude_m=1000.0, randomize_drop=False)
         obs, info = env.reset(seed=200, options={"deterministic": True})
+        assert obs.shape == (22,)
         while True:
             act = model.act_deterministic(obs)
             obs, _, term, trunc, info = env.step(act)
@@ -73,7 +74,7 @@ def test_3d_balls_and_ground_and_linear_and_curved_targets():
 
     # Also verify 200 m and 600 m targets in all 4 quadrants hit within < 10 m!
     ckpt1 = torch.load("checkpoints/glide_rl/gps_1_static.pt", map_location="cpu", weights_only=False)
-    m1 = ActorCritic(obs_dim=14, act_dim=2, hidden_dim=64)
+    m1 = ActorCritic(obs_dim=22, act_dim=2, hidden_dim=64)
     m1.load_state_dict(ckpt1["model_state_dict"])
     for tn, te in [(200.0, 0.0), (0.0, 200.0), (-200.0, 0.0), (0.0, -200.0), (-500.0, -400.0), (600.0, 400.0)]:
         env_q = GlideGpsTargetEnv(target_mode="static", release_altitude_m=1000.0, randomize_drop=False)
@@ -90,7 +91,7 @@ def test_adversarial_pursuit_evasion_car_vs_missile_50_to_300_kmh():
     c_ckpt = Path("checkpoints/glide_rl/car_evader_best.pt")
     assert m_ckpt.exists() and c_ckpt.exists()
 
-    missile_model = ActorCritic(obs_dim=14, act_dim=2, hidden_dim=64)
+    missile_model = ActorCritic(obs_dim=22, act_dim=2, hidden_dim=64)
     car_model = ActorCritic(obs_dim=16, act_dim=2, hidden_dim=64)
     missile_model.load_state_dict(torch.load(m_ckpt, map_location="cpu", weights_only=False)["model_state_dict"])
     car_model.load_state_dict(torch.load(c_ckpt, map_location="cpu", weights_only=False)["model_state_dict"])

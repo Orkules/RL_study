@@ -309,7 +309,7 @@ def adapt_missile_pursuer_round(
 
         for _ in range(ppo_updates):
             rollout_steps = 256
-            obs_b = np.zeros((rollout_steps, 4, 14), dtype=np.float32)
+            obs_b = np.zeros((rollout_steps, 4, 22), dtype=np.float32)
             act_b = np.zeros((rollout_steps, 4, 2), dtype=np.float32)
             logp_b = np.zeros((rollout_steps, 4), dtype=np.float32)
             rew_b = np.zeros((rollout_steps, 4), dtype=np.float32)
@@ -353,7 +353,7 @@ def adapt_missile_pursuer_round(
                 lg = dlt + ppo.cfg.gamma * ppo.cfg.gae_lambda * nnt * lg
                 adv_b[t] = lg
             ret_b = adv_b + val_b
-            ppo.update(obs_b.reshape(-1, 14), act_b.reshape(-1, 2), logp_b.reshape(-1), ret_b.reshape(-1), adv_b.reshape(-1))
+            ppo.update(obs_b.reshape(-1, 22), act_b.reshape(-1, 2), logp_b.reshape(-1), ret_b.reshape(-1), adv_b.reshape(-1))
 
 
 def evaluate_10_duel_trials(
@@ -452,10 +452,11 @@ def run_coevolution_ladder(max_rounds: int = 20, infinite_mode: bool = False) ->
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    missile_model = ActorCritic(obs_dim=14, act_dim=2, hidden_dim=64)
+    missile_model = ActorCritic(obs_dim=22, act_dim=2, hidden_dim=64)
     if (ckpt_dir / "gps_3_aggressive.pt").exists():
         ck = torch.load(ckpt_dir / "gps_3_aggressive.pt", map_location="cpu", weights_only=False)
-        missile_model.load_state_dict(ck["model_state_dict"])
+        if ck.get("obs_dim") == 22:
+            missile_model.load_state_dict(ck["model_state_dict"])
 
     car_model = ActorCritic(obs_dim=16, act_dim=2, hidden_dim=64)
     if (ckpt_dir / "car_evader_best.pt").exists():
@@ -547,7 +548,7 @@ def run_coevolution_ladder(max_rounds: int = 20, infinite_mode: bool = False) ->
                 "stage_id": "gps_4_car_pursuit",
                 "stage_label": f"Adversarial Car-Hunter Missile (vs {cur_speed_kmh:.0f} km/h Car)",
                 "target_mode": "car_evasion",
-                "obs_dim": 14,
+                "obs_dim": 22,
                 "car_max_speed_kmh": cur_speed_kmh,
                 "model_state_dict": missile_model.state_dict(),
                 "hits_out_of_10": ev["hits"],

@@ -82,7 +82,7 @@ class GlideGpsTargetEnv(gym.Env):
         self.geom = LinkageGeometry()
 
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(14,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(22,), dtype=np.float32
         )
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(2,), dtype=np.float32
@@ -105,6 +105,8 @@ class GlideGpsTargetEnv(gym.Env):
         self.target_hdg_rad = 0.0
         self.target_turn_rate_rads = 0.0
         self.target_turn_freq = 0.0
+        # Target position history buffer (21 steps = 1.00 s of past target positions at 20 Hz)
+        self.target_history_ned: List[np.ndarray] = []
 
         # 3D Balls list for "balls_3d" mode: each ball is [North_m, East_m, Down_m (-Alt)]
         self.balls_ned: np.ndarray = np.zeros((1, 3), dtype=np.float64)
@@ -136,6 +138,7 @@ class GlideGpsTargetEnv(gym.Env):
             self.active_ball_idx = chosen_idx
             self.target_ned = self.balls_ned[self.active_ball_idx].copy()
             self.target_ne = self.target_ned[:2]
+            self.target_history_ned = [self.target_ned.copy() for _ in range(21)]
             self.prev_dist_3d = self._compute_dist_3d()
 
     def _compute_dist_3d(self) -> float:
@@ -164,9 +167,21 @@ class GlideGpsTargetEnv(gym.Env):
         # Body-frame airspeed components (u, v, w)
         v_body = self.R_wb.T @ self.vel_ned
 
-        # Target velocity projected into 3D Body Frame (tv_bx forward, tv_by right)
-        tv_ned = np.array([float(self.target_vel_ne[0]), float(self.target_vel_ne[1]), 0.0], dtype=np.float64)
-        tv_body = self.R_wb.T @ tv_ned
+        # Past Target Positions (5, 10, 15, 20 steps ago = 0.25s, 0.50s, 0.75s, 1.00s ago)
+        # Displacements from current target_ned projected into the missile's 3D Body Frame!
+        hist_features: List[float] = []
+        n_hist = len(self.target_history_ned)
+        for k_back, norm_scale in [(5, 6.25), (10, 12.5), (15, 18.75), (20, 25.0)]:
+            idx_h = max(0, n_hist - 1 - k_back)
+            past_ned = self.target_history_ned[idx_h] if n_hist > 0 else self.target_ned
+            delta_ned = self.target_ned - past_ned
+            delta_body = self.R_wb.T @ delta_ned
+            hist_features.append(float(np.clip(delta_body[0] / norm_scale, -3.5, 3.5)))
+            hist_features.append(float(np.clip(delta_body[1] / norm_scale, -3.5, 3.5)))
+
+        #Also include instantaneous 1-step target displacement (0.05s ago) for ultra-fast reaction to sudden RC car jinks!
+        past_1 = self.target_history_ned[max(0, n_hist - 2)] if n_hist > 1 else self.target_ned
+        step_delta_body = self.R_wb.T @ ((self.target_ned - past_1) / self.control_dt)
 
         return np.array(
             [
@@ -182,8 +197,9 @@ class GlideGpsTargetEnv(gym.Env):
                 float(self.R_wb[2, 0]),
                 float(self.R_wb[2, 1]),
                 float(self.R_wb[2, 2]),
-                np.clip(float(tv_body[0]) / 25.0, -3.0, 3.0),
-                np.clip(float(tv_body[1]) / 25.0, -3.0, 3.0),
+                np.clip(float(step_delta_body[0]) / 25.0, -3.5, 3.5),
+                np.clip(float(step_delta_body[1]) / 25.0, -3.5, 3.5),
+                *hist_features,
             ],
             dtype=np.float32,
         )
@@ -324,6 +340,20 @@ class GlideGpsTargetEnv(gym.Env):
             self.balls_ned = self.target_ned.reshape(1, 3).copy()
             self.ball_min_dists = np.array([self._compute_dist_3d()], dtype=np.float64)
 
+        # Pre-populate 21 steps (1.00 s) of target position history so even at step 0 the past trajectory is well-defined
+        self.target_history_ned = []
+        for h_i in range(20, -1, -1):
+            dt_back = h_i * self.control_dt
+            past_pt = np.array(
+                [
+                    self.target_ned[0] - self.target_vel_ne[0] * dt_back,
+                    self.target_ned[1] - self.target_vel_ne[1] * dt_back,
+                    self.target_ned[2],
+                ],
+                dtype=np.float64,
+            )
+            self.target_history_ned.append(past_pt)
+
         self.prev_dist_3d = self._compute_dist_3d()
 
         return self._get_obs(), self.get_info()
@@ -453,6 +483,10 @@ class GlideGpsTargetEnv(gym.Env):
                 self.target_ned[1] = np.clip(self.target_ned[1], -1150.0, 1150.0)
             self.target_ne = self.target_ned[:2]
             self.prev_dist_3d = self._compute_dist_3d()
+
+        self.target_history_ned.append(self.target_ned.copy())
+        if len(self.target_history_ned) > 25:
+            self.target_history_ned.pop(0)
 
         pitch_flap_deg = float(act[0]) * self.max_wing_flap_deg
         roll_flap_deg = float(act[1]) * 35.0

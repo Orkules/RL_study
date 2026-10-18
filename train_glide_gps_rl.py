@@ -27,6 +27,15 @@ def omni_3d_guidance(obs: np.ndarray, lead_gain: float = 0.85) -> np.ndarray:
     g_bx, g_by, g_bz = float(obs[9]), float(obs[10]), float(obs[11])
     tv_bx, tv_by = float(obs[12]), float(obs[13])
 
+    # When 22D past target position history (t - 0.25s, 0.50s, 0.75s, 1.00s) is present,
+    # estimate both velocity and curvature (acceleration) directly from the past positions!
+    if len(obs) >= 22:
+        dx_025, dy_025 = float(obs[14]), float(obs[15])
+        dx_050, dy_050 = float(obs[16]), float(obs[17])
+        # Second-order velocity + curvature extrapolation from past target positions:
+        tv_bx = 0.55 * tv_bx + 0.65 * dx_025 - 0.20 * dx_050
+        tv_by = 0.55 * tv_by + 0.65 * dy_025 - 0.20 * dy_050
+
     dot_dg = dir_bx * g_bx + dir_by * g_by + dir_bz * g_bz
     dist_m = max(10.0, dist_n * 1500.0)
     alt_m = max(5.0, dot_dg * dist_m)
@@ -287,7 +296,7 @@ def run_curriculum_stage(
         for pg in ppo.optimizer.param_groups:
             pg["lr"] = max(3e-5, lr * frac)
 
-        obs_buf = np.zeros((rollout_steps, num_envs, 14), dtype=np.float32)
+        obs_buf = np.zeros((rollout_steps, num_envs, 22), dtype=np.float32)
         act_buf = np.zeros((rollout_steps, num_envs, 2), dtype=np.float32)
         logp_buf = np.zeros((rollout_steps, num_envs), dtype=np.float32)
         rew_buf = np.zeros((rollout_steps, num_envs), dtype=np.float32)
@@ -331,7 +340,7 @@ def run_curriculum_stage(
         ret_buf = adv_buf + val_buf
 
         ppo.update(
-            obs_buf.reshape(-1, 14),
+            obs_buf.reshape(-1, 22),
             act_buf.reshape(-1, 2),
             logp_buf.reshape(-1),
             ret_buf.reshape(-1),
@@ -347,7 +356,7 @@ def run_curriculum_stage(
             "stage_id": stage_id,
             "stage_label": stage_label,
             "target_mode": target_mode,
-            "obs_dim": 14,
+            "obs_dim": 22,
             "model_state_dict": model.state_dict(),
             "total_distance_closed_m": best_eval["total_distance_closed_m"],
             "mean_random_closed_m": best_eval["mean_random_closed_m"],
@@ -377,7 +386,7 @@ if __name__ == "__main__":
     torch.manual_seed(42)
     ckpt_dir = Path("checkpoints/glide_rl")
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    model = ActorCritic(obs_dim=14, act_dim=2, hidden_dim=64)
+    model = ActorCritic(obs_dim=22, act_dim=2, hidden_dim=64)
 
     if stage_arg in ("balls", "all"):
         run_curriculum_stage(
@@ -402,10 +411,12 @@ if __name__ == "__main__":
     if stage_arg in ("linear", "all"):
         if (ckpt_dir / "gps_2_linear.pt").exists():
             ck = torch.load(ckpt_dir / "gps_2_linear.pt", weights_only=False)
-            model.load_state_dict(ck["model_state_dict"])
+            if ck.get("obs_dim") == 22:
+                model.load_state_dict(ck["model_state_dict"])
         elif (ckpt_dir / "gps_1_static.pt").exists():
             ck = torch.load(ckpt_dir / "gps_1_static.pt", weights_only=False)
-            model.load_state_dict(ck["model_state_dict"])
+            if ck.get("obs_dim") == 22:
+                model.load_state_dict(ck["model_state_dict"])
         run_curriculum_stage(
             model=model,
             target_mode="linear",
@@ -421,10 +432,12 @@ if __name__ == "__main__":
     if stage_arg in ("curved", "all"):
         if (ckpt_dir / "gps_3_aggressive.pt").exists():
             ck = torch.load(ckpt_dir / "gps_3_aggressive.pt", weights_only=False)
-            model.load_state_dict(ck["model_state_dict"])
+            if ck.get("obs_dim") == 22:
+                model.load_state_dict(ck["model_state_dict"])
         elif (ckpt_dir / "gps_2_linear.pt").exists():
             ck = torch.load(ckpt_dir / "gps_2_linear.pt", weights_only=False)
-            model.load_state_dict(ck["model_state_dict"])
+            if ck.get("obs_dim") == 22:
+                model.load_state_dict(ck["model_state_dict"])
         run_curriculum_stage(
             model=model,
             target_mode="curved",

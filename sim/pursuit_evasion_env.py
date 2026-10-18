@@ -85,7 +85,7 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.car_cfg = EvaderCarConfig()
         self.geom = LinkageGeometry()
 
-        self.missile_observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(14,), dtype=np.float32)
+        self.missile_observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(22,), dtype=np.float32)
         self.car_observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(16,), dtype=np.float32)
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
 
@@ -105,6 +105,7 @@ class PursuitEvasionAdversarialEnv(gym.Env):
         self.car_speed = 0.0
         self.car_steer = 0.0
         self.car_vel_ne = np.zeros(2, dtype=np.float64)
+        self.target_history_ned: list[np.ndarray] = []
 
         self.step_count = 0
         self.max_steps = 1600
@@ -126,20 +127,26 @@ class PursuitEvasionAdversarialEnv(gym.Env):
 
     def get_missile_obs(self) -> np.ndarray:
         p, q, r = self.omega
-        d_ned = np.array(
-            [
-                float(self.car_pos_ne[0] - self.pos_ned[0]),
-                float(self.car_pos_ne[1] - self.pos_ned[1]),
-                float(0.0 - self.pos_ned[2]),
-            ],
-            dtype=np.float64,
-        )
+        cur_car_ned = np.array([float(self.car_pos_ne[0]), float(self.car_pos_ne[1]), 0.0], dtype=np.float64)
+        d_ned = cur_car_ned - self.pos_ned
         dist_3d = max(1.0, float(np.linalg.norm(d_ned)))
         dir_body = (self.R_wb.T @ d_ned) / dist_3d
         v_body = self.R_wb.T @ self.vel_ned
 
-        tv_ned = np.array([float(self.car_vel_ne[0]), float(self.car_vel_ne[1]), 0.0], dtype=np.float64)
-        tv_body = self.R_wb.T @ tv_ned
+        # Past Car Positions (5, 10, 15, 20 steps ago = 0.25s, 0.50s, 0.75s, 1.00s ago)
+        # Displacements from current car position projected into the missile's 3D Body Frame!
+        hist_features: list[float] = []
+        n_hist = len(self.target_history_ned)
+        for k_back, norm_scale in [(5, 6.25), (10, 12.5), (15, 18.75), (20, 25.0)]:
+            idx_h = max(0, n_hist - 1 - k_back)
+            past_ned = self.target_history_ned[idx_h] if n_hist > 0 else cur_car_ned
+            delta_ned = cur_car_ned - past_ned
+            delta_body = self.R_wb.T @ delta_ned
+            hist_features.append(float(np.clip(delta_body[0] / norm_scale, -3.5, 3.5)))
+            hist_features.append(float(np.clip(delta_body[1] / norm_scale, -3.5, 3.5)))
+
+        past_1 = self.target_history_ned[max(0, n_hist - 2)] if n_hist > 1 else cur_car_ned
+        step_delta_body = self.R_wb.T @ ((cur_car_ned - past_1) / self.control_dt)
 
         return np.array(
             [
@@ -155,8 +162,9 @@ class PursuitEvasionAdversarialEnv(gym.Env):
                 float(self.R_wb[2, 0]),
                 float(self.R_wb[2, 1]),
                 float(self.R_wb[2, 2]),
-                np.clip(float(tv_body[0]) / 25.0, -3.5, 3.5),
-                np.clip(float(tv_body[1]) / 25.0, -3.5, 3.5),
+                np.clip(float(step_delta_body[0]) / 25.0, -3.5, 3.5),
+                np.clip(float(step_delta_body[1]) / 25.0, -3.5, 3.5),
+                *hist_features,
             ],
             dtype=np.float32,
         )
@@ -267,6 +275,19 @@ class PursuitEvasionAdversarialEnv(gym.Env):
             [self.car_speed * np.cos(self.car_yaw), self.car_speed * np.sin(self.car_yaw)],
             dtype=np.float64,
         )
+        self.target_history_ned = []
+        for h_i in range(20, -1, -1):
+            dt_back = h_i * self.control_dt
+            self.target_history_ned.append(
+                np.array(
+                    [
+                        self.car_pos_ne[0] - self.car_vel_ne[0] * dt_back,
+                        self.car_pos_ne[1] - self.car_vel_ne[1] * dt_back,
+                        0.0,
+                    ],
+                    dtype=np.float64,
+                )
+            )
 
         self.step_count = 0
         self.prev_dist_3d = self._compute_dist_3d()
@@ -448,6 +469,10 @@ class PursuitEvasionAdversarialEnv(gym.Env):
             d3 = self._compute_dist_3d()
             if d3 < self.min_dist_3d:
                 self.min_dist_3d = d3
+
+        self.target_history_ned.append(np.array([float(self.car_pos_ne[0]), float(self.car_pos_ne[1]), 0.0], dtype=np.float64))
+        if len(self.target_history_ned) > 25:
+            self.target_history_ned.pop(0)
 
         cur_dist_3d = self._compute_dist_3d()
         cur_dist_2d = float(np.hypot(self.car_pos_ne[0] - self.pos_ned[0], self.car_pos_ne[1] - self.pos_ned[1]))
