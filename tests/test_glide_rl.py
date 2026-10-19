@@ -124,3 +124,33 @@ def test_adversarial_pursuit_evasion_car_vs_missile_strict_boundary_and_hit():
             if tm_ec or tr_ec:
                 break
         assert info_ec["target_error_m"] <= 3.0
+
+
+def test_fpv_powered_3d_balls_env_and_checkpoint():
+    from sim.fpv_balls_env import FpvPoweredBallsEnv
+
+    ckpt_path = Path("checkpoints/glide_rl/fpv_balls_master.pt")
+    assert ckpt_path.exists()
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    model = ActorCritic(obs_dim=25, act_dim=3, hidden_dim=64)
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.eval()
+
+    env = FpvPoweredBallsEnv(num_balls=5, randomize_start=False)
+    obs, info = env.reset(options={"deterministic": True})
+    assert obs.shape == (25,)
+    assert info["shortest_path_length_m"] > 500.0
+    assert info["ideal_min_time_s"] > 5.0
+
+    max_spd = 0.0
+    while True:
+        act = model.act_deterministic(obs)
+        assert act.shape == (3,)
+        obs, _, term, trunc, info = env.step(act)
+        max_spd = max(max_spd, info["airspeed_ms"])
+        if term or trunc:
+            break
+
+    assert info["balls_reached"] >= 3
+    assert max_spd > 55.0
+    assert info["speed_fraction_of_max"] > 0.25
