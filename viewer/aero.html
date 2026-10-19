@@ -968,10 +968,10 @@
     gpsTargetGroup.visible = false;
     scene.add(gpsTargetGroup);
 
-    // 3D Floating Target Balls in the Sky (for "3D Random Balls (FPV)" Mode — 5 Balls)
+    // 3D Floating Target Balls in the Sky (for "3D Random Balls (FPV)" Mode — 20 Balls Across Full 3D Volume)
     const skyBallsGroup = new THREE.Group();
     const skyBallMeshes = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 20; i++) {
       const bMesh = new THREE.Mesh(
         new THREE.SphereGeometry(220, 24, 24),
         new THREE.MeshBasicMaterial({ color: 0xa855f7, wireframe: false, transparent: true, opacity: 0.78 })
@@ -1097,30 +1097,50 @@
     function solveShortest3dBallPathJs(startNed, ballsNed) {
       const n = ballsNed.length;
       const used = new Array(n).fill(false);
-      const curPerm = [];
-      let bestLen = 1e12;
-      let bestOrder = [];
-      function dfs(depth, prevPt, curLen) {
-        if (curLen >= bestLen) return;
-        if (depth === n) {
-          bestLen = curLen;
-          bestOrder = curPerm.slice();
-          return;
-        }
+      const order = [];
+      let curPt = startNed;
+      for (let step = 0; step < n; step++) {
+        let bestIdx = 0;
+        let bestD = 1e12;
         for (let i = 0; i < n; i++) {
           if (!used[i]) {
-            used[i] = true;
-            curPerm.push(i);
             const b = ballsNed[i];
-            const d = Math.hypot(b[0] - prevPt[0], b[1] - prevPt[1], b[2] - prevPt[2]);
-            dfs(depth + 1, b, curLen + d);
-            curPerm.pop();
-            used[i] = false;
+            const d = Math.hypot(b[0] - curPt[0], b[1] - curPt[1], b[2] - curPt[2]);
+            if (d < bestD) { bestD = d; bestIdx = i; }
           }
         }
+        used[bestIdx] = true;
+        order.push(bestIdx);
+        curPt = ballsNed[bestIdx];
       }
-      dfs(0, startNed, 0.0);
-      return { order: bestOrder, length: bestLen };
+      // 2-Opt refinement:
+      const ptAt = (k) => (k < 0 ? startNed : ballsNed[order[k]]);
+      const d3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      for (let it = 0; it < 15; it++) {
+        let imp = false;
+        for (let i = 0; i < n - 1; i++) {
+          for (let j = i + 1; j < n; j++) {
+            const pPrev = ptAt(i - 1), pI = ptAt(i), pJ = ptAt(j);
+            const pNext = j + 1 < n ? ptAt(j + 1) : null;
+            const dOld = d3(pPrev, pI) + (pNext ? d3(pJ, pNext) : 0.0);
+            const dNew = d3(pPrev, pJ) + (pNext ? d3(pI, pNext) : 0.0);
+            if (dNew + 1e-3 < dOld) {
+              let l = i, r = j;
+              while (l < r) { const tmp = order[l]; order[l] = order[r]; order[r] = tmp; l++; r--; }
+              imp = true;
+            }
+          }
+        }
+        if (!imp) break;
+      }
+      let totLen = 0.0;
+      let prev = startNed;
+      for (let i = 0; i < n; i++) {
+        const b = ballsNed[order[i]];
+        totLen += d3(prev, b);
+        prev = b;
+      }
+      return { order, length: totLen };
     }
 
     function updateFpvBallsVisuals() {
@@ -1208,10 +1228,10 @@
         }
         if (chosenSimMode === "fpv_balls_3d") {
           const balls = [];
-          for (let i = 0; i < 5; i++) {
-            const bx = (Math.random() * 2.0 - 1.0) * 650.0;
-            const by = (Math.random() * 2.0 - 1.0) * 650.0;
-            const bz = -(80.0 + Math.random() * 840.0);
+          for (let i = 0; i < 20; i++) {
+            const bx = (Math.random() * 2.0 - 1.0) * 850.0;
+            const by = (Math.random() * 2.0 - 1.0) * 850.0;
+            const bz = -(60.0 + Math.random() * 1340.0);
             balls.push([bx, by, bz]);
           }
           gpsState.initBallsNed = balls;

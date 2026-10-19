@@ -46,35 +46,72 @@ class FpvPusherMotorConfig:
 
 def solve_shortest_3d_ball_path(start_pos_ned: np.ndarray, balls_ned: np.ndarray) -> Tuple[List[int], float, List[float]]:
     """
-    Find the exact shortest 3D Euclidean path (Traveling Salesperson tour) starting at `start_pos_ned`
+    Find the shortest 3D Euclidean path (Traveling Salesperson tour) starting at `start_pos_ned`
     and visiting all `N` balls in `balls_ned`.
-    Returns:
-      - best_order: permutation of ball indices [0..N-1] that minimizes total 3D path length
-      - min_total_len: shortest total 3D path length L_path (m)
-      - leg_lengths: 3D Euclidean length of each leg along best_order
+    Uses exact permutation search for N <= 6 and fast Nearest-Neighbor + 2-Opt refinement for N > 6 (20 to 100+ balls).
     """
     n_balls = len(balls_ned)
-    best_len = float("inf")
-    best_order: List[int] = list(range(n_balls))
-    best_legs: List[float] = []
+    if n_balls <= 6:
+        best_len = float("inf")
+        best_order: List[int] = list(range(n_balls))
+        best_legs: List[float] = []
+        for perm in itertools.permutations(range(n_balls)):
+            cur_p = start_pos_ned
+            tot_d = 0.0
+            legs: List[float] = []
+            for idx in perm:
+                d = float(np.linalg.norm(balls_ned[idx] - cur_p))
+                tot_d += d
+                legs.append(d)
+                if tot_d >= best_len:
+                    break
+                cur_p = balls_ned[idx]
+            if tot_d < best_len:
+                best_len = tot_d
+                best_order = list(perm)
+                best_legs = legs
+        return best_order, float(best_len), best_legs
 
-    for perm in itertools.permutations(range(n_balls)):
-        cur_p = start_pos_ned
-        tot_d = 0.0
-        legs: List[float] = []
-        for idx in perm:
-            d = float(np.linalg.norm(balls_ned[idx] - cur_p))
-            tot_d += d
-            legs.append(d)
-            if tot_d >= best_len:
-                break
-            cur_p = balls_ned[idx]
-        if tot_d < best_len:
-            best_len = tot_d
-            best_order = list(perm)
-            best_legs = legs
+    # Fast Nearest-Neighbor + 2-Opt TSP for 10, 20, 50, or 100+ balls:
+    unvisited = set(range(n_balls))
+    order: List[int] = []
+    cur_p = start_pos_ned
+    while unvisited:
+        nxt = min(unvisited, key=lambda idx: float(np.linalg.norm(balls_ned[idx] - cur_p)))
+        order.append(nxt)
+        unvisited.remove(nxt)
+        cur_p = balls_ned[nxt]
 
-    return best_order, float(best_len), best_legs
+    # 2-Opt local search refinement:
+    def tour_pt(k: int) -> np.ndarray:
+        return start_pos_ned if k < 0 else balls_ned[order[k]]
+
+    improved = True
+    iters = 0
+    while improved and iters < 25:
+        improved = False
+        iters += 1
+        for i in range(n_balls - 1):
+            for j in range(i + 1, n_balls):
+                p_prev = tour_pt(i - 1)
+                p_i = tour_pt(i)
+                p_j = tour_pt(j)
+                p_next = tour_pt(j + 1) if j + 1 < n_balls else None
+                d_old = float(np.linalg.norm(p_i - p_prev)) + (float(np.linalg.norm(p_next - p_j)) if p_next is not None else 0.0)
+                d_new = float(np.linalg.norm(p_j - p_prev)) + (float(np.linalg.norm(p_next - p_i)) if p_next is not None else 0.0)
+                if d_new + 1e-4 < d_old:
+                    order[i : j + 1] = reversed(order[i : j + 1])
+                    improved = True
+
+    legs_out: List[float] = []
+    tot_len = 0.0
+    cur_p = start_pos_ned
+    for idx in order:
+        d = float(np.linalg.norm(balls_ned[idx] - cur_p))
+        legs_out.append(d)
+        tot_len += d
+        cur_p = balls_ned[idx]
+    return order, float(tot_len), legs_out
 
 
 class FpvPoweredBallsEnv(gym.Env):
@@ -110,7 +147,7 @@ class FpvPoweredBallsEnv(gym.Env):
 
     def __init__(
         self,
-        num_balls: int = 5,
+        num_balls: int = 20,
         ball_touch_radius_m: float = 8.0,
         release_altitude_m: float = 500.0,
         control_dt: float = 0.05,
@@ -157,7 +194,7 @@ class FpvPoweredBallsEnv(gym.Env):
         self.distance_along_tour_covered_m: float = 0.0
 
         self.step_count = 0
-        self.max_steps = 1200  # 60 seconds max episode
+        self.max_steps = max(1200, self.num_balls * 200)
         self.prev_dist_to_active = 0.0
         self.total_path_flown_m = 0.0
         self.total_oscillation_penalty = 0.0
@@ -281,26 +318,45 @@ class FpvPoweredBallsEnv(gym.Env):
         self.last_action = np.array([0.0, 0.0, 0.2], dtype=np.float32)
         self.prev_action = self.last_action.copy()
 
-        # Spawn N balls completely randomly in 3D space (no quadrant restrictions, no fixed altitude bands!)
+        # Spawn N balls completely randomly in 3D space (including altitudes well ABOVE the starting point: up to 1,400 m!)
         if "balls_ned" in options:
             self.balls_ned = np.array(options["balls_ned"], dtype=np.float64)
         elif deterministic:
-            self.balls_ned = np.array(
-                [
-                    [160.0, -140.0, -580.0],
-                    [340.0, 190.0, -420.0],
-                    [120.0, 380.0, -640.0],
-                    [-240.0, 220.0, -310.0],
-                    [-380.0, -180.0, -490.0],
-                ][: self.num_balls],
-                dtype=np.float64,
-            )
+            base_balls = [
+                [160.0, -140.0, -580.0],
+                [340.0, 190.0, -420.0],
+                [120.0, 380.0, -640.0],
+                [-240.0, 220.0, -310.0],
+                [-380.0, -180.0, -490.0],
+                [-150.0, -420.0, -780.0],
+                [280.0, -360.0, -920.0],
+                [520.0, -120.0, -1120.0],
+                [460.0, 320.0, -860.0],
+                [-80.0, 540.0, -1050.0],
+                [-460.0, 380.0, -740.0],
+                [-580.0, -60.0, -960.0],
+                [-320.0, -520.0, -620.0],
+                [80.0, -580.0, -360.0],
+                [480.0, -440.0, -240.0],
+                [640.0, 80.0, -480.0],
+                [320.0, 560.0, -720.0],
+                [-220.0, 620.0, -1220.0],
+                [-620.0, 240.0, -1320.0],
+                [-480.0, -380.0, -1150.0],
+            ]
+            while len(base_balls) < self.num_balls:
+                k = len(base_balls)
+                ang = k * 2.39996
+                rad = 220.0 + (k % 7) * 95.0
+                alt = 120.0 + ((k * 173) % 1250)
+                base_balls.append([rad * np.cos(ang), rad * np.sin(ang), -alt])
+            self.balls_ned = np.array(base_balls[: self.num_balls], dtype=np.float64)
         else:
             balls = []
             for _ in range(self.num_balls):
-                bx = float(self.np_random.uniform(-650.0, 650.0))
-                by = float(self.np_random.uniform(-650.0, 650.0))
-                bz = -float(self.np_random.uniform(80.0, 920.0))
+                bx = float(self.np_random.uniform(-900.0, 900.0))
+                by = float(self.np_random.uniform(-900.0, 900.0))
+                bz = -float(self.np_random.uniform(60.0, 1400.0))
                 balls.append([bx, by, bz])
             self.balls_ned = np.array(balls, dtype=np.float64)
 
