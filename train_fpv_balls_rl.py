@@ -278,6 +278,31 @@ def run_continuous_fpv_balls_training(infinite_mode: bool = True, seed: int = 42
             best_score = sc_ppo
             best_sd = {key: val.clone() for key, val in model.state_dict().items()}
             best_ev = ev_ppo
+            torch.save(
+                {
+                    "stage_id": "fpv_balls_master",
+                    "stage_label": f"FPV Powered 3D Multi-Ball Hunter ({cur_num_balls} Balls, <=3.0m Touch)",
+                    "target_mode": "fpv_balls_3d",
+                    "obs_dim": 25,
+                    "act_dim": 3,
+                    "model_state_dict": model.state_dict(),
+                    "det_balls_reached": best_ev["det_balls_reached"],
+                    "mean_balls_reached": best_ev["mean_balls_reached"],
+                    "mean_speed_fraction_of_max": best_ev["mean_speed_fraction_of_max"],
+                    "max_airspeed_ms": best_ev["max_airspeed_ms"],
+                    "episode_return": best_ev["episode_return"],
+                },
+                ckpt_file,
+            )
+            export_fpv_model_to_viewer(ckpt_dir)
+            print(
+                f"[Gen {gen:3d} | {cur_num_balls} Balls (<=3.0m)] NEW BEST (PPO) -> "
+                f"Det Balls = {best_ev['det_balls_reached']}/{cur_num_balls} | "
+                f"Mean Balls = {best_ev['mean_balls_reached']}/{cur_num_balls} | "
+                f"Speed/V_max = {best_ev['mean_speed_fraction_of_max']*100:.1f}% | "
+                f"Peak Speed = {best_ev['max_airspeed_ms']} m/s",
+                flush=True,
+            )
 
         # Phase B: Multi-Scale Evolutionary Policy Exploration around best_sd
         for cand_i in range(6):
