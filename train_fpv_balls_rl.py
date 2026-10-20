@@ -305,18 +305,19 @@ def run_continuous_fpv_balls_training(infinite_mode: bool = True, seed: int = 42
         # Phase B: Multi-Scale Evolutionary Policy Exploration around best_sd
         for cand_i in range(6):
             model.load_state_dict(best_sd)
-            cand_sigma = sigma * (0.35 if cand_i < 2 else (1.0 if cand_i < 4 else 2.2))
+            cand_sigma = sigma * (0.45 if cand_i < 2 else (1.1 if cand_i < 4 else 2.5))
             with torch.no_grad():
-                if cand_i % 2 == 0:
-                    # Focused subspace perturbation on active hidden units + output layer
-                    model.actor_net[0].weight[:12, :] += torch.randn_like(model.actor_net[0].weight[:12, :]) * cand_sigma
-                    model.actor_net[0].bias[:12] += torch.randn_like(model.actor_net[0].bias[:12]) * cand_sigma
-                    model.actor_net[2].weight[:12, :12] += torch.randn_like(model.actor_net[2].weight[:12, :12]) * cand_sigma
-                    model.actor_net[4].weight[:, :12] += torch.randn_like(model.actor_net[4].weight[:, :12]) * cand_sigma
+                if cand_i < 4:
+                    # Focused subspace perturbation on the 8 core hidden neurons + output weights
+                    model.actor_net[0].weight[:8, :] += torch.randn_like(model.actor_net[0].weight[:8, :]) * cand_sigma
+                    model.actor_net[0].bias[:8] += torch.randn_like(model.actor_net[0].bias[:8]) * cand_sigma
+                    model.actor_net[2].weight[:8, :8] += torch.randn_like(model.actor_net[2].weight[:8, :8]) * cand_sigma
+                    model.actor_net[2].bias[:8] += torch.randn_like(model.actor_net[2].bias[:8]) * cand_sigma
+                    model.actor_net[4].weight[:, :8] += torch.randn_like(model.actor_net[4].weight[:, :8]) * cand_sigma
                     model.actor_net[4].bias += torch.randn_like(model.actor_net[4].bias) * cand_sigma
                 else:
                     for param in model.actor_net.parameters():
-                        param.add_(torch.randn_like(param) * cand_sigma)
+                        param.add_(torch.randn_like(param) * (cand_sigma * 0.25))
 
             ev_k = evaluate_with_return(model, cur_num_balls, 4, 100)
             sc_k = (
