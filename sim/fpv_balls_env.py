@@ -564,15 +564,19 @@ class FpvPoweredBallsEnv(gym.Env):
         if balls_newly_touched > 0:
             touch_reward = 1500.0 * balls_newly_touched * (1.0 + 0.25 * self.balls_reached_count)
 
+        # Velocity alignment toward the active ball + closest-approach potential + miss-orbit penalty:
         act_idx = self._active_ball_idx()
         d_to_ball = self.balls_ned[act_idx] - self.pos_ned
         dist_to_ball = max(1.0, float(np.linalg.norm(d_to_ball)))
         unit_to_ball = d_to_ball / dist_to_ball
         closing_vel_ms = float(np.dot(self.vel_ned, unit_to_ball))
-        vel_align_bonus = 0.08 * (closing_vel_ms / self.motor_cfg.max_achievable_speed_ms)
-        near_weight = 1.0 + 4.0 * float(np.exp(-cur_dist / 35.0))
+        vel_align_bonus = 0.25 * (closing_vel_ms / self.motor_cfg.max_achievable_speed_ms)
+        near_weight = 1.0 + 6.0 * float(np.exp(-cur_dist / 30.0))
 
-        reward = 6.0 * near_weight * dist_dec + vel_align_bonus + touch_reward + speed_bonus_this_step - osc_pen
+        # Penalize flying away (dist_dec < 0) when within 80 m of the active ball without touching it!
+        miss_orbit_pen = 1.5 * abs(dist_dec) if (cur_dist < 80.0 and dist_dec < -0.1 and balls_newly_touched == 0) else 0.0
+
+        reward = 6.0 * near_weight * dist_dec + vel_align_bonus + touch_reward + speed_bonus_this_step - osc_pen - miss_orbit_pen
 
         all_balls_finished = bool(self.balls_reached_count >= self.num_balls)
         crashed_ground = bool(-self.pos_ned[2] <= 0.0)
