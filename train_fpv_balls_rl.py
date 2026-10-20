@@ -139,11 +139,29 @@ def run_continuous_fpv_balls_training(infinite_mode: bool = True, seed: int = 42
     ball_tiers = [20, 35, 50, 100]
     tier_idx = 0
     best_sd = {k: v.clone() for k, v in model.state_dict().items()}
-    best_ev = evaluate_fpv_balls_policy(model, num_balls=ball_tiers[tier_idx], num_episodes=4, seed=100)
+    def evaluate_with_return(m_eval: ActorCritic, n_b: int, n_ep: int, s0: int) -> Dict[str, Any]:
+        ev_d = evaluate_fpv_balls_policy(m_eval, num_balls=n_b, num_episodes=n_ep, seed=s0)
+        # Also compute mean episode return across all n_ep episodes for smooth reward-driven optimization:
+        rets = [ev_d["episode_return"]]
+        for k_e in range(1, n_ep):
+            env_r = FpvPoweredBallsEnv(num_balls=n_b, ball_touch_radius_m=3.0, randomize_start=True)
+            o_r, _ = env_r.reset(seed=s0 + k_e * 43, options={"deterministic": False})
+            ep_r = 0.0
+            while True:
+                a_r = m_eval.act_deterministic(o_r)
+                o_r, rw_r, tm_r, tr_r, _ = env_r.step(a_r)
+                ep_r += rw_r
+                if tm_r or tr_r:
+                    break
+            rets.append(float(ep_r))
+        ev_d["mean_episode_return"] = round(float(np.mean(rets)), 2)
+        return ev_d
+
+    best_ev = evaluate_with_return(model, ball_tiers[tier_idx], 4, 100)
     best_score = (
-        3000.0 * (0.5 * best_ev["det_balls_reached"] + 0.5 * best_ev["mean_balls_reached"])
-        + 2500.0 * best_ev["mean_speed_fraction_of_max"]
-        + 0.05 * best_ev["episode_return"]
+        4000.0 * (0.5 * best_ev["det_balls_reached"] + 0.5 * best_ev["mean_balls_reached"])
+        + 3000.0 * best_ev["mean_speed_fraction_of_max"]
+        + 0.25 * best_ev["mean_episode_return"]
     )
     print(f"[Continuous FPV 3D Balls Loop (<=3.0m Touch)] Starting at {ball_tiers[tier_idx]} Balls | Initial: {best_ev}", flush=True)
 
@@ -221,29 +239,38 @@ def run_continuous_fpv_balls_training(infinite_mode: bool = True, seed: int = 42
                 loss_sil.backward()
                 ppo.optimizer.step()
 
-        ev_ppo = evaluate_fpv_balls_policy(model, num_balls=cur_num_balls, num_episodes=4, seed=100)
+        ev_ppo = evaluate_with_return(model, cur_num_balls, 4, 100)
         sc_ppo = (
-            3000.0 * (0.5 * ev_ppo["det_balls_reached"] + 0.5 * ev_ppo["mean_balls_reached"])
-            + 2500.0 * ev_ppo["mean_speed_fraction_of_max"]
-            + 0.05 * ev_ppo["episode_return"]
+            4000.0 * (0.5 * ev_ppo["det_balls_reached"] + 0.5 * ev_ppo["mean_balls_reached"])
+            + 3000.0 * ev_ppo["mean_speed_fraction_of_max"]
+            + 0.25 * ev_ppo["mean_episode_return"]
         )
         if sc_ppo > best_score:
             best_score = sc_ppo
             best_sd = {key: val.clone() for key, val in model.state_dict().items()}
             best_ev = ev_ppo
 
-        # Phase B: Evolutionary Policy Exploration around best_sd
-        for _ in range(5):
+        # Phase B: Multi-Scale Evolutionary Policy Exploration around best_sd
+        for cand_i in range(6):
             model.load_state_dict(best_sd)
+            cand_sigma = sigma * (0.35 if cand_i < 2 else (1.0 if cand_i < 4 else 2.2))
             with torch.no_grad():
-                for param in model.actor_net.parameters():
-                    param.add_(torch.randn_like(param) * sigma)
+                if cand_i % 2 == 0:
+                    # Focused subspace perturbation on active hidden units + output layer
+                    model.actor_net[0].weight[:12, :] += torch.randn_like(model.actor_net[0].weight[:12, :]) * cand_sigma
+                    model.actor_net[0].bias[:12] += torch.randn_like(model.actor_net[0].bias[:12]) * cand_sigma
+                    model.actor_net[2].weight[:12, :12] += torch.randn_like(model.actor_net[2].weight[:12, :12]) * cand_sigma
+                    model.actor_net[4].weight[:, :12] += torch.randn_like(model.actor_net[4].weight[:, :12]) * cand_sigma
+                    model.actor_net[4].bias += torch.randn_like(model.actor_net[4].bias) * cand_sigma
+                else:
+                    for param in model.actor_net.parameters():
+                        param.add_(torch.randn_like(param) * cand_sigma)
 
-            ev_k = evaluate_fpv_balls_policy(model, num_balls=cur_num_balls, num_episodes=4, seed=100)
+            ev_k = evaluate_with_return(model, cur_num_balls, 4, 100)
             sc_k = (
-                3000.0 * (0.5 * ev_k["det_balls_reached"] + 0.5 * ev_k["mean_balls_reached"])
-                + 2500.0 * ev_k["mean_speed_fraction_of_max"]
-                + 0.05 * ev_k["episode_return"]
+                4000.0 * (0.5 * ev_k["det_balls_reached"] + 0.5 * ev_k["mean_balls_reached"])
+                + 3000.0 * ev_k["mean_speed_fraction_of_max"]
+                + 0.25 * ev_k["mean_episode_return"]
             )
             if sc_k > best_score:
                 best_score = sc_k
