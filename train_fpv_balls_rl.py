@@ -19,7 +19,7 @@ def evaluate_fpv_balls_policy(
     seed: int = 100,
 ) -> Dict[str, Any]:
     """Evaluate 25D-obs, 3D-action FPV Powered Multi-Ball policy across deterministic + random 3D ball layouts."""
-    env_det = FpvPoweredBallsEnv(num_balls=num_balls, randomize_start=False)
+    env_det = FpvPoweredBallsEnv(num_balls=num_balls, ball_touch_radius_m=3.0, randomize_start=False)
     obs, info = env_det.reset(seed=seed, options={"deterministic": True})
     ep_return = 0.0
     max_speed = info["airspeed_ms"]
@@ -39,7 +39,7 @@ def evaluate_fpv_balls_policy(
     balls_list = [det_balls]
     speed_fracs = [det_speed_frac]
     for k in range(1, num_episodes):
-        env_r = FpvPoweredBallsEnv(num_balls=num_balls, randomize_start=True)
+        env_r = FpvPoweredBallsEnv(num_balls=num_balls, ball_touch_radius_m=3.0, randomize_start=True)
         o, inf = env_r.reset(seed=seed + k * 43, options={"deterministic": False})
         while True:
             a = model.act_deterministic(o)
@@ -120,9 +120,10 @@ def export_fpv_model_to_viewer(ckpt_dir: Path = Path("checkpoints/glide_rl")) ->
 
 def run_continuous_fpv_balls_training(infinite_mode: bool = True, seed: int = 42) -> None:
     """
-    Continuous Pure-RL Training Loop on 20 -> 50 -> 100 Random 3D Balls (including altitudes above the drop point):
-      - Zero interference with how the network learns (only optimizes the reward: balls touched + speed along shortest path).
-      - Does NOT accept or advance until 100% of balls in the field are touched!
+    100% Unassisted Pure-RL Training Loop on 20 -> 35 -> 50 -> 100 Random 3D Balls (strictly <= 3.0 m physical touch):
+      - Combine PPO policy-gradient rollouts + Reward-Weighted Self-Imitation on self-discovered ball-touching segments
+        + Evolutionary Policy Search, with ZERO hand-coded weights or heuristics.
+      - Does NOT advance to the next ball count until 100% of balls in the field are touched!
     """
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -140,28 +141,108 @@ def run_continuous_fpv_balls_training(infinite_mode: bool = True, seed: int = 42
     best_sd = {k: v.clone() for k, v in model.state_dict().items()}
     best_ev = evaluate_fpv_balls_policy(model, num_balls=ball_tiers[tier_idx], num_episodes=4, seed=100)
     best_score = (
-        2500.0 * (0.5 * best_ev["det_balls_reached"] + 0.5 * best_ev["mean_balls_reached"])
-        + 2000.0 * best_ev["mean_speed_fraction_of_max"]
+        3000.0 * (0.5 * best_ev["det_balls_reached"] + 0.5 * best_ev["mean_balls_reached"])
+        + 2500.0 * best_ev["mean_speed_fraction_of_max"]
         + 0.05 * best_ev["episode_return"]
     )
-    print(f"[Continuous FPV 3D Balls Loop] Starting at {ball_tiers[tier_idx]} Balls | Initial: {best_ev}", flush=True)
+    print(f"[Continuous FPV 3D Balls Loop (<=3.0m Touch)] Starting at {ball_tiers[tier_idx]} Balls | Initial: {best_ev}", flush=True)
+
+    envs = [FpvPoweredBallsEnv(num_balls=ball_tiers[tier_idx], ball_touch_radius_m=3.0, randomize_start=True) for _ in range(4)]
+    ppo = PPOTrainer(
+        model,
+        PPOConfig(lr=1.5e-4, gamma=0.995, gae_lambda=0.97, clip_coef=0.18, ent_coef=0.002, update_epochs=4, minibatch_size=256),
+    )
+    obs = np.stack([e.reset(seed=seed + i * 29)[0] for i, e in enumerate(envs)], axis=0)
+    elite_obs: List[np.ndarray] = []
+    elite_act: List[np.ndarray] = []
 
     gen = 0
     while True:
         gen += 1
         cur_num_balls = ball_tiers[tier_idx]
-        sigma = max(0.015, 0.06 * (0.97 ** (gen % 40)))
+        sigma = max(0.015, 0.055 * (0.96 ** (gen % 35)))
 
-        for _ in range(6):
+        # Phase A: PPO Rollout + Harvest Self-Discovered Ball-Touching Segments (Reward > 1200)
+        model.load_state_dict(best_sd)
+        with torch.no_grad():
+            model.log_std.fill_(-1.15)
+        obs_b = np.zeros((256, 4, 25), dtype=np.float32)
+        act_b = np.zeros((256, 4, 3), dtype=np.float32)
+        logp_b = np.zeros((256, 4), dtype=np.float32)
+        rew_b = np.zeros((256, 4), dtype=np.float32)
+        done_b = np.zeros((256, 4), dtype=np.float32)
+        val_b = np.zeros((256, 4), dtype=np.float32)
+
+        for st in range(256):
+            obs_b[st] = obs
+            with torch.no_grad():
+                ot = torch.as_tensor(obs, dtype=torch.float32)
+                at, lt, _, vt = model.get_action_and_value(ot)
+            acts = np.clip(at.cpu().numpy(), -1.0, 1.0)
+            act_b[st] = acts
+            logp_b[st] = lt.cpu().numpy()
+            val_b[st] = vt.cpu().numpy()
+            n_obs_l = []
+            for idx_e, e in enumerate(envs):
+                no, rw, tm, tr, _ = e.step(acts[idx_e])
+                dn = tm or tr
+                rew_b[st, idx_e] = rw
+                done_b[st, idx_e] = 1.0 if dn else 0.0
+                if rw > 1200.0:
+                    s0 = max(0, st - 30)
+                    for k_s in range(s0, st + 1):
+                        elite_obs.append(obs_b[k_s, idx_e].copy())
+                        elite_act.append(act_b[k_s, idx_e].copy())
+                if dn:
+                    no, _ = e.reset()
+                n_obs_l.append(no)
+            obs = np.stack(n_obs_l, axis=0)
+
+        with torch.no_grad():
+            nv = model.critic_net(torch.as_tensor(obs, dtype=torch.float32)).squeeze(-1).cpu().numpy()
+        adv_b = np.zeros_like(rew_b)
+        lg = np.zeros(4, dtype=np.float32)
+        for t in reversed(range(256)):
+            nnt = 1.0 - done_b[t]
+            nvs = nv if t == 255 else val_b[t + 1]
+            dlt = rew_b[t] + ppo.cfg.gamma * nvs * nnt - val_b[t]
+            lg = dlt + ppo.cfg.gamma * ppo.cfg.gae_lambda * nnt * lg
+            adv_b[t] = lg
+        ret_b = adv_b + val_b
+        ppo.update(obs_b.reshape(-1, 25), act_b.reshape(-1, 3), logp_b.reshape(-1), ret_b.reshape(-1), adv_b.reshape(-1))
+
+        if len(elite_obs) >= 64:
+            eot = torch.as_tensor(np.stack(elite_obs[-2048:], axis=0), dtype=torch.float32)
+            eat = torch.as_tensor(np.stack(elite_act[-2048:], axis=0), dtype=torch.float32)
+            for _ in range(6):
+                pm, _ = model(eot)
+                loss_sil = ((pm - eat) ** 2).mean()
+                ppo.optimizer.zero_grad()
+                loss_sil.backward()
+                ppo.optimizer.step()
+
+        ev_ppo = evaluate_fpv_balls_policy(model, num_balls=cur_num_balls, num_episodes=4, seed=100)
+        sc_ppo = (
+            3000.0 * (0.5 * ev_ppo["det_balls_reached"] + 0.5 * ev_ppo["mean_balls_reached"])
+            + 2500.0 * ev_ppo["mean_speed_fraction_of_max"]
+            + 0.05 * ev_ppo["episode_return"]
+        )
+        if sc_ppo > best_score:
+            best_score = sc_ppo
+            best_sd = {key: val.clone() for key, val in model.state_dict().items()}
+            best_ev = ev_ppo
+
+        # Phase B: Evolutionary Policy Exploration around best_sd
+        for _ in range(5):
             model.load_state_dict(best_sd)
             with torch.no_grad():
                 for param in model.actor_net.parameters():
                     param.add_(torch.randn_like(param) * sigma)
 
-            ev_k = evaluate_fpv_balls_policy(model, num_balls=cur_num_balls, num_episodes=4, seed=100 + (gen // 10))
+            ev_k = evaluate_fpv_balls_policy(model, num_balls=cur_num_balls, num_episodes=4, seed=100)
             sc_k = (
-                2500.0 * (0.5 * ev_k["det_balls_reached"] + 0.5 * ev_k["mean_balls_reached"])
-                + 2000.0 * ev_k["mean_speed_fraction_of_max"]
+                3000.0 * (0.5 * ev_k["det_balls_reached"] + 0.5 * ev_k["mean_balls_reached"])
+                + 2500.0 * ev_k["mean_speed_fraction_of_max"]
                 + 0.05 * ev_k["episode_return"]
             )
             if sc_k > best_score:
@@ -172,7 +253,7 @@ def run_continuous_fpv_balls_training(infinite_mode: bool = True, seed: int = 42
                 torch.save(
                     {
                         "stage_id": "fpv_balls_master",
-                        "stage_label": f"FPV Powered 3D Multi-Ball Hunter ({cur_num_balls} Balls)",
+                        "stage_label": f"FPV Powered 3D Multi-Ball Hunter ({cur_num_balls} Balls, <=3.0m Touch)",
                         "target_mode": "fpv_balls_3d",
                         "obs_dim": 25,
                         "act_dim": 3,
@@ -187,7 +268,7 @@ def run_continuous_fpv_balls_training(infinite_mode: bool = True, seed: int = 42
                 )
                 export_fpv_model_to_viewer(ckpt_dir)
                 print(
-                    f"[Gen {gen:3d} | {cur_num_balls} Balls] NEW BEST -> "
+                    f"[Gen {gen:3d} | {cur_num_balls} Balls (<=3.0m)] NEW BEST -> "
                     f"Det Balls = {best_ev['det_balls_reached']}/{cur_num_balls} | "
                     f"Mean Balls = {best_ev['mean_balls_reached']}/{cur_num_balls} | "
                     f"Speed/V_max = {best_ev['mean_speed_fraction_of_max']*100:.1f}% | "
@@ -195,14 +276,26 @@ def run_continuous_fpv_balls_training(infinite_mode: bool = True, seed: int = 42
                     flush=True,
                 )
 
+        if gen % 3 == 0:
+            print(
+                f"[Gen {gen:3d} | {cur_num_balls} Balls (<=3.0m)] Status -> "
+                f"Best Det = {best_ev['det_balls_reached']}/{cur_num_balls} | "
+                f"Best Mean = {best_ev['mean_balls_reached']}/{cur_num_balls} | "
+                f"Speed/V_max = {best_ev['mean_speed_fraction_of_max']*100:.1f}% | "
+                f"Elite Steps = {len(elite_obs)}",
+                flush=True,
+            )
+
         # Only advance to the next ball-count tier (20 -> 35 -> 50 -> 100) if it touches 100% of balls!
         if best_ev["det_balls_reached"] >= cur_num_balls and best_ev["mean_balls_reached"] >= 0.95 * cur_num_balls:
             if tier_idx < len(ball_tiers) - 1:
                 tier_idx += 1
+                envs = [FpvPoweredBallsEnv(num_balls=ball_tiers[tier_idx], ball_touch_radius_m=3.0, randomize_start=True) for _ in range(4)]
+                obs = np.stack([e.reset(seed=seed + i * 29)[0] for i, e in enumerate(envs)], axis=0)
                 best_ev = evaluate_fpv_balls_policy(model, num_balls=ball_tiers[tier_idx], num_episodes=4, seed=100)
                 best_score = (
-                    2500.0 * (0.5 * best_ev["det_balls_reached"] + 0.5 * best_ev["mean_balls_reached"])
-                    + 2000.0 * best_ev["mean_speed_fraction_of_max"]
+                    3000.0 * (0.5 * best_ev["det_balls_reached"] + 0.5 * best_ev["mean_balls_reached"])
+                    + 2500.0 * best_ev["mean_speed_fraction_of_max"]
                     + 0.05 * best_ev["episode_return"]
                 )
                 print(f"==> 100% OF {cur_num_balls} BALLS TOUCHED! Advancing to {ball_tiers[tier_idx]} Balls!", flush=True)

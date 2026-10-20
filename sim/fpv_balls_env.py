@@ -148,7 +148,7 @@ class FpvPoweredBallsEnv(gym.Env):
     def __init__(
         self,
         num_balls: int = 20,
-        ball_touch_radius_m: float = 8.0,
+        ball_touch_radius_m: float = 3.0,
         release_altitude_m: float = 500.0,
         control_dt: float = 0.05,
         max_wing_flap_deg: float = MAX_WING_FLAP_DEG,
