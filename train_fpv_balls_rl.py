@@ -160,8 +160,7 @@ def run_continuous_fpv_balls_training(infinite_mode: bool = True, seed: int = 42
         speed_fracs = [det_speed_frac]
         rets = [float(ep_ret_det)]
         for k_e in range(1, n_ep):
-            env_r = FpvPoweredBallsEnv(num_balls=min(10, n_b), ball_touch_radius_m=3.0, randomize_start=True)
-            env_r.max_steps = 1200
+            env_r = FpvPoweredBallsEnv(num_balls=n_b, ball_touch_radius_m=3.0, randomize_start=True)
             o_r, inf_r = env_r.reset(seed=s0 + k_e * 43, options={"deterministic": False})
             ep_r = 0.0
             while True:
@@ -170,8 +169,7 @@ def run_continuous_fpv_balls_training(infinite_mode: bool = True, seed: int = 42
                 ep_r += rw_r
                 if tm_r or tr_r:
                     break
-            # Scale random ball count to n_b equivalent:
-            balls_list.append(float(inf_r["balls_reached"]) * (n_b / float(min(10, n_b))))
+            balls_list.append(float(inf_r["balls_reached"]))
             speed_fracs.append(float(inf_r["speed_fraction_of_max"]))
             rets.append(float(ep_r))
         return {

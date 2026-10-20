@@ -194,7 +194,7 @@ class FpvPoweredBallsEnv(gym.Env):
         self.distance_along_tour_covered_m: float = 0.0
 
         self.step_count = 0
-        self.max_steps = max(1200, self.num_balls * 200)
+        self.max_steps = max(2000, self.num_balls * 450)
         self.prev_dist_to_active = 0.0
         self.total_path_flown_m = 0.0
         self.total_oscillation_penalty = 0.0
