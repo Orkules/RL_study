@@ -590,7 +590,7 @@ class FpvPoweredBallsEnv(gym.Env):
 
         if crashed_ground and not all_balls_finished:
             self.pos_ned[2] = 0.0
-            reward -= 500.0
+            reward -= 8000.0 * (1.0 - float(self.balls_reached_count) / float(self.num_balls))
 
         terminated = all_balls_finished or crashed_ground
         truncated = bool(self.step_count >= self.max_steps)
