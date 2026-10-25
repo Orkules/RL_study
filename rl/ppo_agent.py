@@ -45,11 +45,24 @@ class ActorCritic(nn.Module):
         raw = self.actor_net(obs)
         # For 24D GPS/Pursuit models, enforce exact physical left-right bilateral symmetry:
         # pi(obs) = 0.5 * (f(obs) + mirror_act(f(mirror_obs(obs))))
-        if obs.shape[-1] == 24:
+        if obs.shape[-1] == 24 and raw.shape[-1] == 2:
             obs_m = obs.clone()
             obs_m[..., [1, 6, 8, 9, 13, 16, 19, 22]] = -obs_m[..., [1, 6, 8, 9, 13, 16, 19, 22]]
             raw_m = self.actor_net(obs_m)
             raw_sym = torch.stack([0.5 * (raw[..., 0] + raw_m[..., 0]), 0.5 * (raw[..., 1] - raw_m[..., 1])], dim=-1)
+            mean = torch.tanh(raw_sym)
+        elif obs.shape[-1] == 25 and raw.shape[-1] == 3:
+            obs_m = obs.clone()
+            obs_m[..., [1, 6, 8, 9, 13, 15, 19, 24]] = -obs_m[..., [1, 6, 8, 9, 13, 15, 19, 24]]
+            raw_m = self.actor_net(obs_m)
+            raw_sym = torch.stack(
+                [
+                    0.5 * (raw[..., 0] + raw_m[..., 0]),
+                    0.5 * (raw[..., 1] - raw_m[..., 1]),
+                    0.5 * (raw[..., 2] + raw_m[..., 2]),
+                ],
+                dim=-1,
+            )
             mean = torch.tanh(raw_sym)
         else:
             mean = torch.tanh(raw)
